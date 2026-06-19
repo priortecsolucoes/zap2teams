@@ -40,36 +40,47 @@ async def _process_one(notification: dict) -> None:
     if reply_match:
         parent_id, reply_id = reply_match.group(1), reply_match.group(2)
         parent_message_id = parent_id
+        print(f"[Teams→WA] buscando reply {reply_id} da msg {parent_id}")
         message = await teams_api.get_reply(parent_id, reply_id)
     elif top_match:
         message_id = top_match.group(1)
+        print(f"[Teams→WA] buscando msg top-level {message_id}")
         message = await teams_api.get_message(message_id)
         parent_message_id = message.get("replyToId")
         if not parent_message_id:
-            return  # mensagem top-level sem contexto anterior
+            print(f"[Teams→WA] ignorado (top-level sem replyToId)")
+            return
     else:
         return
 
-    if message.get("messageType") != "message":
+    msg_type = message.get("messageType")
+    print(f"[Teams→WA] messageType={msg_type}")
+    if msg_type != "message":
         return
 
     content: str = (message.get("body") or {}).get("content", "")
+    print(f"[Teams→WA] content={content[:200]}")
     if "📱 Mensagem WhatsApp" in content:
+        print(f"[Teams→WA] ignorado (é o próprio card WA)")
         return
 
     reply_text = _strip_html(content).strip()
+    print(f"[Teams→WA] reply_text={reply_text[:100]!r}")
     if not reply_text:
         return
 
     sender_name: str = (message.get("from") or {}).get("user", {}).get("displayName", "Colaborador")
 
+    print(f"[Teams→WA] buscando msg pai {parent_message_id}")
     parent_message = await teams_api.get_message(parent_message_id)
     parent_content: str = (parent_message.get("body") or {}).get("content", "")
     for att in parent_message.get("attachments") or []:
         parent_content += " " + (att.get("content") or "")
+    print(f"[Teams→WA] parent_content={parent_content[:300]}")
     wa_match = re.search(r'\[wa:([^|\]]+)\|([^|\]]+)\|([^\]]+)\]', parent_content)
     if not wa_match:
         print(f"[Teams→WA] Metadados WA não encontrados na mensagem pai: {parent_message_id}")
+        print(f"[Teams→WA] parent_content completo: {parent_content[:600]}")
         return
 
     wa_group_id = wa_match.group(1).strip()

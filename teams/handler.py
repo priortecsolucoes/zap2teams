@@ -29,6 +29,9 @@ async def process_notifications(body: dict) -> None:
 async def _process_one(notification: dict) -> None:
     resource: str = notification.get("resource", "")
 
+    if settings.teams_chat_id not in resource:
+        return
+
     reply_match = re.search(r"messages\('([^']+)'\)/replies\('([^']+)'\)$", resource)
     top_match = re.search(r"messages\('([^']+)'\)$", resource)
 

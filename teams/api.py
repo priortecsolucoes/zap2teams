@@ -154,7 +154,7 @@ async def create_subscription(notification_url: str) -> dict:
             "changeType": "created",
             "notificationUrl": notification_url,
             "lifecycleNotificationUrl": notification_url,
-            "resource": f"chats/{settings.teams_chat_id}/messages",
+            "resource": "chats/getAllMessages",
             "expirationDateTime": expiration,
             "clientState": settings.teams_notification_secret,
         },

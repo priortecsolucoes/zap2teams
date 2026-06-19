@@ -51,7 +51,6 @@ async def _get_delegated_token() -> str:
                 data={
                     "grant_type": "refresh_token",
                     "client_id": settings.teams_client_id,
-                    "client_secret": settings.teams_client_secret,
                     "refresh_token": refresh_token,
                     "scope": "offline_access ChatMessage.Send",
                 },

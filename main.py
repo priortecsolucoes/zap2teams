@@ -42,6 +42,11 @@ async def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
 
+@app.get("/webhook/whatsapp")
+async def whatsapp_webhook_verify():
+    return Response(content="OK", status_code=200)
+
+
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     payload = await request.json()

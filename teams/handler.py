@@ -29,10 +29,10 @@ async def process_notifications(body: dict) -> None:
 async def _process_one(notification: dict) -> None:
     resource: str = notification.get("resource", "")
 
-    # teams/{id}/channels/{id}/messages/{parentId}/replies/{replyId}
-    reply_match = re.search(r"messages/([^/]+)/replies/([^/]+)$", resource)
-    # teams/{id}/channels/{id}/messages/{messageId}
-    top_match = re.search(r"messages/([^/]+)$", resource)
+    # OData: messages('parentId')/replies('replyId')
+    reply_match = re.search(r"messages\('([^']+)'\)/replies\('([^']+)'\)$", resource)
+    # OData: messages('messageId')
+    top_match = re.search(r"messages\('([^']+)'\)$", resource)
 
     message: dict
     parent_message_id: str | None

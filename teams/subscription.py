@@ -33,6 +33,29 @@ async def setup_subscription() -> None:
         await teams_api.delete_subscription(existing["subscription_id"])
         db.delete_subscription(existing["subscription_id"])
 
+    # DB vazio mas pode haver subscription no Graph (ex: redeploy sem persistência)
+    resource = f"teams/{settings.teams_team_id}/channels/{settings.teams_channel_id}/messages"
+    try:
+        all_subs = await teams_api.list_subscriptions()
+        for graph_sub in all_subs:
+            if graph_sub.get("resource", "").lower() == resource.lower():
+                print(f"[Subscription] Encontrada no Graph: {graph_sub['id']} — atualizando URL...")
+                try:
+                    updated = await teams_api.update_subscription_url(graph_sub["id"], notification_url)
+                    db.save_subscription({
+                        "subscription_id": updated["id"],
+                        "expiration_datetime": updated["expirationDateTime"],
+                        "resource": updated["resource"],
+                    })
+                    print(f"[Subscription] URL atualizada | ID: {updated['id']} | Expira: {updated['expirationDateTime']}")
+                    asyncio.create_task(_renewal_loop(updated["expirationDateTime"]))
+                    return
+                except Exception as e:
+                    print(f"[Subscription] Falha ao atualizar URL, deletando: {e}")
+                    await teams_api.delete_subscription(graph_sub["id"])
+    except Exception as e:
+        print(f"[Subscription] Falha ao listar subscriptions do Graph: {e}")
+
     sub = await teams_api.create_subscription(notification_url)
     db.save_subscription(
         {

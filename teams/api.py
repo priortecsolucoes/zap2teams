@@ -137,6 +137,11 @@ async def create_subscription(notification_url: str) -> dict:
     )
 
 
+async def list_subscriptions() -> list[dict]:
+    result = await graph_request("GET", "/subscriptions")
+    return result.get("value", [])
+
+
 async def renew_subscription(subscription_id: str) -> dict:
     from datetime import datetime, timezone, timedelta
 
@@ -145,6 +150,21 @@ async def renew_subscription(subscription_id: str) -> dict:
         "PATCH",
         f"/subscriptions/{subscription_id}",
         {"expirationDateTime": expiration},
+    )
+
+
+async def update_subscription_url(subscription_id: str, notification_url: str) -> dict:
+    from datetime import datetime, timezone, timedelta
+
+    expiration = (datetime.now(timezone.utc) + timedelta(hours=23)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return await graph_request(
+        "PATCH",
+        f"/subscriptions/{subscription_id}",
+        {
+            "expirationDateTime": expiration,
+            "notificationUrl": notification_url,
+            "lifecycleNotificationUrl": notification_url,
+        },
     )
 
 

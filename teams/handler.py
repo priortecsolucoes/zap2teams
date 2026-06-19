@@ -3,6 +3,7 @@ import re
 import whatsapp.api as wa_api
 import teams.api as teams_api
 from config import settings
+from storage import db
 
 
 async def process_notifications(body: dict) -> None:
@@ -44,43 +45,40 @@ async def _process_one(notification: dict) -> None:
         message = await teams_api.get_reply(parent_id, reply_id)
     elif top_match:
         message_id = top_match.group(1)
-        print(f"[Teams→WA] buscando msg top-level {message_id}")
         message = await teams_api.get_message(message_id)
         parent_message_id = message.get("replyToId")
         if not parent_message_id:
-            print(f"[Teams→WA] ignorado (top-level sem replyToId)")
+            # Mensagem top-level: verificar se é card WA e salvar thread mapping
+            _maybe_save_thread(message_id, message)
             return
     else:
         return
 
-    msg_type = message.get("messageType")
-    print(f"[Teams→WA] messageType={msg_type}")
-    if msg_type != "message":
+    if message.get("messageType") != "message":
+        return
+
+    # Ignorar mensagens enviadas pelo próprio app (via Graph API)
+    from_info = message.get("from") or {}
+    if from_info.get("application"):
         return
 
     content: str = (message.get("body") or {}).get("content", "")
-    print(f"[Teams→WA] content={content[:200]}")
     if "📱 Mensagem WhatsApp" in content:
-        print(f"[Teams→WA] ignorado (é o próprio card WA)")
         return
 
     reply_text = _strip_html(content).strip()
-    print(f"[Teams→WA] reply_text={reply_text[:100]!r}")
     if not reply_text:
         return
 
-    sender_name: str = (message.get("from") or {}).get("user", {}).get("displayName", "Colaborador")
+    sender_name: str = from_info.get("user", {}).get("displayName", "Colaborador")
 
-    print(f"[Teams→WA] buscando msg pai {parent_message_id}")
     parent_message = await teams_api.get_message(parent_message_id)
     parent_content: str = (parent_message.get("body") or {}).get("content", "")
     for att in parent_message.get("attachments") or []:
         parent_content += " " + (att.get("content") or "")
-    print(f"[Teams→WA] parent_content={parent_content[:300]}")
     wa_match = re.search(r'\[wa:([^|\]]+)\|([^|\]]+)\|([^\]]+)\]', parent_content)
     if not wa_match:
         print(f"[Teams→WA] Metadados WA não encontrados na mensagem pai: {parent_message_id}")
-        print(f"[Teams→WA] parent_content completo: {parent_content[:600]}")
         return
 
     wa_group_id = wa_match.group(1).strip()
@@ -94,6 +92,18 @@ async def _process_one(notification: dict) -> None:
 
     await wa_api.send_reply(wa_group_id, wa_message_id, reply_text)
     print(f"[Teams→WA] ✓ Resposta enviada para {wa_group_id}")
+
+
+def _maybe_save_thread(message_id: str, message: dict) -> None:
+    """Se a mensagem top-level for um card WA, salva o mapping chat_id → thread."""
+    content: str = (message.get("body") or {}).get("content", "")
+    for att in message.get("attachments") or []:
+        content += " " + (att.get("content") or "")
+    wa_match = re.search(r'\[wa:([^|\]]+)\|([^|\]]+)\|([^\]]+)\]', content)
+    if wa_match:
+        wa_chat_id = wa_match.group(1).strip()
+        db.save_thread(wa_chat_id, message_id)
+        print(f"[Teams] Thread mapeada: {wa_chat_id[:30]} → {message_id}")
 
 
 def _strip_html(html_str: str) -> str:

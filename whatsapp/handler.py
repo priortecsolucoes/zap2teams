@@ -1,4 +1,5 @@
 import teams.api as teams_api
+from storage import db
 
 
 def _extract_text(message: dict) -> str | None:
@@ -86,15 +87,26 @@ async def handle_incoming(payload: dict) -> None:
 
     print(f'[WA→Teams] Chat: "{group_name}" | De: {sender_name} | Msg: "{text[:80]}"')
 
+    active_thread = db.get_active_thread(chat_id)
+
     try:
-        await teams_api.post_to_channel(
-            group_id=chat_id,
-            group_name=group_name,
-            sender_name=sender_name,
-            sender_number=sender_number,
-            message_text=text,
-            wa_message_id=message_id,
-        )
-        print(f"[WA→Teams] ✓ Postado no Teams")
+        if active_thread:
+            await teams_api.post_reply_to_thread(
+                active_thread["teams_message_id"],
+                sender_name,
+                text,
+            )
+            db.update_thread_timestamp(chat_id)
+            print(f"[WA→Teams] ✓ Reply na thread {active_thread['teams_message_id']}")
+        else:
+            await teams_api.post_to_channel(
+                group_id=chat_id,
+                group_name=group_name,
+                sender_name=sender_name,
+                sender_number=sender_number,
+                message_text=text,
+                wa_message_id=message_id,
+            )
+            print(f"[WA→Teams] ✓ Nova thread criada")
     except Exception as e:
         print(f"[WA→Teams] Erro ao postar no Teams: {e}")

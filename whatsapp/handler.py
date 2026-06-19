@@ -18,31 +18,51 @@ def _extract_text(message: dict) -> str | None:
 
 async def handle_incoming(payload: dict) -> None:
     print(f"[WA handler] chaves: {list(payload.keys())}")
-    data = payload.get("data") or payload
-    key = data.get("key") or {}
-    print(f"[WA handler] key={key} | fromMe={key.get('fromMe')} | remoteJid={key.get('remoteJid', '')[:30]}")
+
+    # Uazapi format: messages array at root level
+    messages_list = payload.get("messages")
+    if messages_list and isinstance(messages_list, list):
+        msg = messages_list[0]
+        print(f"[WA handler] Uazapi msg chaves: {list(msg.keys())}")
+        key = msg.get("key") or {}
+        message_content = msg.get("message")
+        push_name = msg.get("pushName") or msg.get("notifyName")
+        participant = msg.get("participant") or key.get("participant", "")
+    else:
+        # Evolution API / generic format
+        data = payload.get("data") or payload
+        key = data.get("key") or {}
+        message_content = data.get("message")
+        push_name = data.get("pushName") or data.get("notifyName")
+        participant = data.get("participant") or key.get("participant", "")
+
+    print(f"[WA handler] key={key} | fromMe={key.get('fromMe')} | remoteJid={key.get('remoteJid', '')[:40]}")
 
     if key.get("fromMe"):
         return
 
     group_id: str = key.get("remoteJid", "")
     if not group_id.endswith("@g.us"):
+        print(f"[WA handler] ignorado (não é grupo): {group_id[:40]}")
         return
 
     message_id: str = key.get("id", "")
     if not message_id:
         return
 
-    sender_jid: str = data.get("participant") or (key.get("participant") or "")
-    sender_name: str = data.get("pushName") or data.get("notifyName") or "Desconhecido"
-    sender_number: str = sender_jid.replace("@s.whatsapp.net", "") or group_id
+    sender_name: str = push_name or "Desconhecido"
+    sender_number: str = participant.replace("@s.whatsapp.net", "") or group_id
+
+    chat_obj = payload.get("chat") or {}
     group_name: str = (
-        (data.get("chat") or {}).get("name")
-        or (data.get("groupMetadata") or {}).get("subject")
+        chat_obj.get("name")
+        or chat_obj.get("subject")
         or group_id.replace("@g.us", "")
     )
-    text = _extract_text(data.get("message"))
+
+    text = _extract_text(message_content)
     if not text:
+        print(f"[WA handler] sem texto extraível | message_content={message_content}")
         return
 
     print(f'[WA→Teams] Grupo: "{group_name}" | De: {sender_name} | Msg: "{text[:80]}"')

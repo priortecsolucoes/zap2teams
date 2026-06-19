@@ -21,7 +21,8 @@ async def handle_incoming(payload: dict) -> None:
 
     # Uazapi format: single 'message' object at root level
     msg = payload.get("message")
-    if msg and isinstance(msg, dict) and msg.get("key"):
+    print(f"[WA handler] message type={type(msg).__name__} | value={str(msg)[:300]}")
+    if msg and isinstance(msg, dict):
         print(f"[WA handler] Uazapi msg chaves: {list(msg.keys())}")
         key = msg.get("key") or {}
         message_content = msg.get("message")
@@ -41,27 +42,27 @@ async def handle_incoming(payload: dict) -> None:
         return
 
     group_id: str = key.get("remoteJid", "")
-    if not group_id.endswith("@g.us"):
-        print(f"[WA handler] ignorado (não é grupo): {group_id[:40]}")
-        return
+    # TEMP: aceitar qualquer remetente para debug
+    print(f"[WA handler] group_id={group_id[:40]} | is_group={group_id.endswith('@g.us')}")
 
     message_id: str = key.get("id", "")
-    if not message_id:
-        return
+    print(f"[WA handler] message_id={message_id}")
 
     sender_name: str = push_name or "Desconhecido"
-    sender_number: str = participant.replace("@s.whatsapp.net", "") or group_id
+    sender_number: str = participant.replace("@s.whatsapp.net", "") or group_id or "debug"
 
     chat_obj = payload.get("chat") or {}
     group_name: str = (
         chat_obj.get("name")
         or chat_obj.get("subject")
         or group_id.replace("@g.us", "")
+        or "debug-direto"
     )
 
     text = _extract_text(message_content)
+    print(f"[WA handler] text={str(text)[:100]}")
     if not text:
-        print(f"[WA handler] sem texto extraível | message_content={message_content}")
+        print(f"[WA handler] sem texto extraível | message_content={str(message_content)[:200]}")
         return
 
     print(f'[WA→Teams] Grupo: "{group_name}" | De: {sender_name} | Msg: "{text[:80]}"')

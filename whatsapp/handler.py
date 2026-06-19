@@ -17,8 +17,10 @@ def _extract_text(message: dict) -> str | None:
 
 
 async def handle_incoming(payload: dict) -> None:
+    print(f"[WA handler] chaves: {list(payload.keys())}")
     data = payload.get("data") or payload
     key = data.get("key") or {}
+    print(f"[WA handler] key={key} | fromMe={key.get('fromMe')} | remoteJid={key.get('remoteJid', '')[:30]}")
 
     if key.get("fromMe"):
         return

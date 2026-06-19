@@ -19,10 +19,9 @@ def _extract_text(message: dict) -> str | None:
 async def handle_incoming(payload: dict) -> None:
     print(f"[WA handler] chaves: {list(payload.keys())}")
 
-    # Uazapi format: messages array at root level
-    messages_list = payload.get("messages")
-    if messages_list and isinstance(messages_list, list):
-        msg = messages_list[0]
+    # Uazapi format: single 'message' object at root level
+    msg = payload.get("message")
+    if msg and isinstance(msg, dict) and msg.get("key"):
         print(f"[WA handler] Uazapi msg chaves: {list(msg.keys())}")
         key = msg.get("key") or {}
         message_content = msg.get("message")

@@ -37,22 +37,21 @@ async def handle_incoming(payload: dict) -> None:
 
     if msg and isinstance(msg, dict) and "chatid" in msg:
         # Uazapi flat format
-        if msg.get("fromMe") or msg.get("wasSentByApi"):
-            print(f"[WA handler] ignorado fromMe={msg.get('fromMe')} wasSentByApi={msg.get('wasSentByApi')}")
+        if msg.get("wasSentByApi"):
             return
 
-        group_id: str = msg.get("chatid", "")
-        if not group_id.endswith("@g.us"):
-            print(f"[WA handler] ignorado (não é grupo): {group_id[:40]}")
-            return
-
+        chat_id: str = msg.get("chatid", "")
         message_id: str = msg.get("messageid") or msg.get("id", "")
         if not message_id:
             return
 
+        is_group: bool = msg.get("isGroup") or chat_id.endswith("@g.us")
         sender_name: str = msg.get("senderName") or "Desconhecido"
-        sender_number: str = (msg.get("sender") or "").replace("@s.whatsapp.net", "") or group_id
-        group_name: str = msg.get("groupName") or group_id.replace("@g.us", "")
+        sender_number: str = (msg.get("sender") or "").replace("@s.whatsapp.net", "") or chat_id
+        group_name: str = (
+            msg.get("groupName")
+            or (chat_id.replace("@g.us", "") if is_group else sender_name)
+        )
         text = _extract_text_uazapi(msg)
 
     else:
@@ -63,24 +62,21 @@ async def handle_incoming(payload: dict) -> None:
         if key.get("fromMe"):
             return
 
-        group_id = key.get("remoteJid", "")
-        if not group_id.endswith("@g.us"):
-            print(f"[WA handler] ignorado (não é grupo): {group_id[:40]}")
-            return
-
+        chat_id = key.get("remoteJid", "")
         message_id = key.get("id", "")
         if not message_id:
             return
 
+        is_group = chat_id.endswith("@g.us")
         sender_jid: str = data.get("participant") or key.get("participant", "")
         sender_name = data.get("pushName") or data.get("notifyName") or "Desconhecido"
-        sender_number = sender_jid.replace("@s.whatsapp.net", "") or group_id
+        sender_number = sender_jid.replace("@s.whatsapp.net", "") or chat_id
         chat_obj = payload.get("chat") or {}
         group_name = (
             chat_obj.get("name")
             or chat_obj.get("subject")
             or (data.get("groupMetadata") or {}).get("subject")
-            or group_id.replace("@g.us", "")
+            or (chat_id.replace("@g.us", "") if is_group else sender_name)
         )
         text = _extract_text(data.get("message"))
 
@@ -88,11 +84,11 @@ async def handle_incoming(payload: dict) -> None:
         print(f"[WA handler] sem texto extraível")
         return
 
-    print(f'[WA→Teams] Grupo: "{group_name}" | De: {sender_name} | Msg: "{text[:80]}"')
+    print(f'[WA→Teams] Chat: "{group_name}" | De: {sender_name} | Msg: "{text[:80]}"')
 
     try:
         await teams_api.post_to_channel(
-            group_id=group_id,
+            group_id=chat_id,
             group_name=group_name,
             sender_name=sender_name,
             sender_number=sender_number,

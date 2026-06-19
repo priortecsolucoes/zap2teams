@@ -7,33 +7,23 @@ def _headers() -> dict:
     return {"token": settings.uazapi_token, "Content-Type": "application/json"}
 
 
-async def send_text(group_id: str, text: str) -> dict:
+async def send_text(chat_id: str, text: str) -> dict:
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
-            f"{settings.uazapi_base}/send/text/{settings.uazapi_instance}",
+            f"{settings.uazapi_base}/send/text",
             headers=_headers(),
-            json={"number": group_id, "text": text},
+            json={"number": chat_id, "text": text},
         )
         resp.raise_for_status()
         return resp.json()
 
 
-async def send_reply(group_id: str, quoted_msg_id: str, text: str) -> dict:
+async def send_reply(chat_id: str, quoted_msg_id: str, text: str) -> dict:
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
-            f"{settings.uazapi_base}/send/text/{settings.uazapi_instance}",
+            f"{settings.uazapi_base}/send/text",
             headers=_headers(),
-            json={
-                "number": group_id,
-                "text": text,
-                "quoted": {
-                    "key": {
-                        "id": quoted_msg_id,
-                        "remoteJid": group_id,
-                        "fromMe": False,
-                    }
-                },
-            },
+            json={"number": chat_id, "text": text, "quoted": quoted_msg_id},
         )
         resp.raise_for_status()
         return resp.json()

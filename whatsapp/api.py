@@ -10,7 +10,7 @@ def _headers() -> dict:
 async def send_text(group_id: str, text: str) -> dict:
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
-            f"{settings.uazapi_base}/message/sendText/{settings.uazapi_instance}",
+            f"{settings.uazapi_base}/send/text/{settings.uazapi_instance}",
             headers=_headers(),
             json={"number": group_id, "text": text},
         )
@@ -21,7 +21,7 @@ async def send_text(group_id: str, text: str) -> dict:
 async def send_reply(group_id: str, quoted_msg_id: str, text: str) -> dict:
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
-            f"{settings.uazapi_base}/message/sendText/{settings.uazapi_instance}",
+            f"{settings.uazapi_base}/send/text/{settings.uazapi_instance}",
             headers=_headers(),
             json={
                 "number": group_id,

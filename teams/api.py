@@ -104,20 +104,17 @@ async def post_to_channel(
 
 
 async def post_reply_to_thread(parent_message_id: str, sender_name: str, text: str) -> None:
-    def esc(s: str) -> str:
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-    await graph_request(
-        "POST",
-        f"/teams/{settings.teams_team_id}/channels/{settings.teams_channel_id}"
-        f"/messages/{parent_message_id}/replies",
-        {
-            "body": {
-                "contentType": "html",
-                "content": f"<p><strong>📱 {esc(sender_name)}:</strong> {esc(text)}</p>",
-            }
-        },
-    )
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(
+            settings.teams_reply_webhook_url,
+            json={
+                "parentMessageId": parent_message_id,
+                "senderName": sender_name,
+                "text": text,
+            },
+        )
+        if not resp.is_success:
+            raise Exception(f"Reply Webhook {resp.status_code}: {resp.text}")
 
 
 async def get_message(message_id: str) -> dict:

@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     teams_channel_id: str
     teams_notification_secret: str = "defaultsecret123"
     teams_incoming_webhook_url: str
+    teams_reply_webhook_url: str
 
     @property
     def uazapi_base(self) -> str:

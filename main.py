@@ -57,9 +57,10 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
         is_message = (
             event.get("event") in ("message", "messages.upsert")
             or event.get("type") == "message"
+            or event.get("EventType") == "messages"
             or bool(data.get("key"))
         )
-        print(f"[WA webhook] evento recebido | is_message={is_message} | event={str(event)[:120]}")
+        print(f"[WA webhook] evento recebido | is_message={is_message} | event={str(event)[:600]}")
         if is_message:
             print("[WA webhook] agendando handle_incoming...")
             background_tasks.add_task(wa_handler.handle_incoming, event)

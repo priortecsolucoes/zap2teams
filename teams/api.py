@@ -6,7 +6,9 @@ import httpx
 from config import settings
 
 _token_cache: dict = {"token": None, "expiry": 0.0}
+_pa_token_cache: dict = {"token": None, "expiry": 0.0}
 _token_lock = asyncio.Lock()
+_pa_token_lock = asyncio.Lock()
 
 
 async def _get_access_token() -> str:
@@ -31,6 +33,30 @@ async def _get_access_token() -> str:
         _token_cache["token"] = data["access_token"]
         _token_cache["expiry"] = time.time() + data["expires_in"]
         return _token_cache["token"]
+
+
+async def _get_pa_token() -> str:
+    async with _pa_token_lock:
+        if _pa_token_cache["token"] and time.time() < _pa_token_cache["expiry"] - 60:
+            return _pa_token_cache["token"]
+
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.post(
+                f"https://login.microsoftonline.com/{settings.teams_tenant_id}/oauth2/v2.0/token",
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": settings.teams_client_id,
+                    "client_secret": settings.teams_client_secret,
+                    "scope": "https://service.flow.microsoft.com/.default",
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        _pa_token_cache["token"] = data["access_token"]
+        _pa_token_cache["expiry"] = time.time() + data["expires_in"]
+        return _pa_token_cache["token"]
 
 
 async def graph_request(method: str, path: str, body: dict | None = None) -> dict:
@@ -104,9 +130,11 @@ async def post_to_channel(
 
 
 async def post_reply_to_thread(parent_message_id: str, sender_name: str, text: str) -> None:
+    token = await _get_pa_token()
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post(
             settings.teams_reply_webhook_url,
+            headers={"Authorization": f"Bearer {token}"},
             json={
                 "parentMessageId": parent_message_id,
                 "senderName": sender_name,

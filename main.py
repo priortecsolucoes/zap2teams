@@ -46,6 +46,7 @@ async def _poll_device_code(device_code: str, interval: int) -> None:
                 data={
                     "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
                     "client_id": settings.teams_client_id,
+                    "client_secret": settings.teams_client_secret,
                     "device_code": device_code,
                 },
                 headers={"Content-Type": "application/x-www-form-urlencoded"},

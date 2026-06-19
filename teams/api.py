@@ -6,9 +6,9 @@ import httpx
 from config import settings
 
 _token_cache: dict = {"token": None, "expiry": 0.0}
-_pa_token_cache: dict = {"token": None, "expiry": 0.0}
+_delegated_cache: dict = {"token": None, "expiry": 0.0}
 _token_lock = asyncio.Lock()
-_pa_token_lock = asyncio.Lock()
+_delegated_lock = asyncio.Lock()
 
 
 async def _get_access_token() -> str:
@@ -35,28 +35,37 @@ async def _get_access_token() -> str:
         return _token_cache["token"]
 
 
-async def _get_pa_token() -> str:
-    async with _pa_token_lock:
-        if _pa_token_cache["token"] and time.time() < _pa_token_cache["expiry"] - 60:
-            return _pa_token_cache["token"]
+async def _get_delegated_token() -> str:
+    async with _delegated_lock:
+        if _delegated_cache["token"] and time.time() < _delegated_cache["expiry"] - 60:
+            return _delegated_cache["token"]
+
+        from storage import db
+        refresh_token = db.get_refresh_token()
+        if not refresh_token:
+            raise Exception("Sem refresh token. Acesse /auth/setup para autenticar.")
 
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.post(
                 f"https://login.microsoftonline.com/{settings.teams_tenant_id}/oauth2/v2.0/token",
                 data={
-                    "grant_type": "client_credentials",
+                    "grant_type": "refresh_token",
                     "client_id": settings.teams_client_id,
                     "client_secret": settings.teams_client_secret,
-                    "scope": "https://service.flow.microsoft.com/.default",
+                    "refresh_token": refresh_token,
+                    "scope": "offline_access ChatMessage.Send",
                 },
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
             resp.raise_for_status()
             data = resp.json()
 
-        _pa_token_cache["token"] = data["access_token"]
-        _pa_token_cache["expiry"] = time.time() + data["expires_in"]
-        return _pa_token_cache["token"]
+        if "refresh_token" in data:
+            db.save_refresh_token(data["refresh_token"])
+
+        _delegated_cache["token"] = data["access_token"]
+        _delegated_cache["expiry"] = time.time() + data["expires_in"]
+        return _delegated_cache["token"]
 
 
 async def graph_request(method: str, path: str, body: dict | None = None) -> dict:
@@ -73,91 +82,64 @@ async def graph_request(method: str, path: str, body: dict | None = None) -> dic
         return resp.json() if resp.content else {}
 
 
-async def post_to_channel(
-    group_id: str,
-    group_name: str,
+def _esc(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+async def post_to_chat(
     sender_name: str,
-    sender_number: str,
-    message_text: str,
+    chat_name: str,
+    text: str,
+    wa_chat_id: str,
     wa_message_id: str,
 ) -> None:
-    clean_number = sender_number.replace("@s.whatsapp.net", "").replace("@g.us", "")
+    token = await _get_delegated_token()
     safe_sender = sender_name.replace("|", "").replace("[", "").replace("]", "")
-    ref = f"[wa:{group_id}|{wa_message_id}|{safe_sender}]"
-    card = {
-        "type": "AdaptiveCard",
-        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-        "version": "1.4",
-        "body": [
-            {
-                "type": "TextBlock",
-                "text": f"📱 Mensagem WhatsApp — {group_name}",
-                "weight": "Bolder",
-                "size": "Medium",
-                "wrap": True,
-            },
-            {
-                "type": "FactSet",
-                "facts": [{"title": "De:", "value": f"{sender_name} (+{clean_number})"}],
-            },
-            {
-                "type": "TextBlock",
-                "text": message_text,
-                "wrap": True,
-            },
-            {
-                "type": "TextBlock",
-                "text": "↩ Responda nesta thread para responder ao cliente.",
-                "wrap": True,
-                "isSubtle": True,
-            },
-            {
-                "type": "TextBlock",
-                "text": ref,
-                "wrap": False,
-                "isSubtle": True,
-                "size": "Small",
-            },
-        ],
-    }
+    ref = f"[wa:{wa_chat_id}|{wa_message_id}|{safe_sender}]"
+    content = (
+        f"<p>📱 <strong>{_esc(sender_name)}</strong> &nbsp;·&nbsp; {_esc(chat_name)}</p>"
+        f"<p>{_esc(text)}</p>"
+        f"<p><em><span style='font-size:11px;color:gray'>{ref}</span></em></p>"
+    )
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post(
-            settings.teams_incoming_webhook_url,
-            json=card,
+            f"https://graph.microsoft.com/v1.0/chats/{settings.teams_chat_id}/messages",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"body": {"contentType": "html", "content": content}},
         )
         if not resp.is_success:
-            raise Exception(f"Incoming Webhook {resp.status_code}: {resp.text}")
+            raise Exception(f"Chat post {resp.status_code}: {resp.text}")
 
 
-async def post_reply_to_thread(parent_message_id: str, sender_name: str, text: str) -> None:
-    token = await _get_pa_token()
+async def post_reply_to_chat(
+    parent_message_id: str,
+    sender_name: str,
+    text: str,
+) -> None:
+    token = await _get_delegated_token()
+    content = f"<p>📱 <strong>{_esc(sender_name)}:</strong> {_esc(text)}</p>"
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post(
-            settings.teams_reply_webhook_url,
-            headers={"Authorization": f"Bearer {token}"},
-            json={
-                "parentMessageId": parent_message_id,
-                "senderName": sender_name,
-                "text": text,
-            },
+            f"https://graph.microsoft.com/v1.0/chats/{settings.teams_chat_id}"
+            f"/messages/{parent_message_id}/replies",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"body": {"contentType": "html", "content": content}},
         )
         if not resp.is_success:
-            raise Exception(f"Reply Webhook {resp.status_code}: {resp.text}")
+            raise Exception(f"Chat reply {resp.status_code}: {resp.text}")
 
 
-async def get_message(message_id: str) -> dict:
+async def get_chat_message(message_id: str) -> dict:
     return await graph_request(
         "GET",
-        f"/teams/{settings.teams_team_id}/channels/{settings.teams_channel_id}"
-        f"/messages/{message_id}",
+        f"/chats/{settings.teams_chat_id}/messages/{message_id}",
     )
 
 
-async def get_reply(parent_message_id: str, reply_id: str) -> dict:
+async def get_chat_reply(parent_message_id: str, reply_id: str) -> dict:
     return await graph_request(
         "GET",
-        f"/teams/{settings.teams_team_id}/channels/{settings.teams_channel_id}"
-        f"/messages/{parent_message_id}/replies/{reply_id}",
+        f"/chats/{settings.teams_chat_id}/messages/{parent_message_id}/replies/{reply_id}",
     )
 
 
@@ -172,7 +154,7 @@ async def create_subscription(notification_url: str) -> dict:
             "changeType": "created",
             "notificationUrl": notification_url,
             "lifecycleNotificationUrl": notification_url,
-            "resource": f"teams/{settings.teams_team_id}/channels/{settings.teams_channel_id}/messages",
+            "resource": f"chats/{settings.teams_chat_id}/messages",
             "expirationDateTime": expiration,
             "clientState": settings.teams_notification_secret,
         },

@@ -39,6 +39,11 @@ def init_db() -> None:
                 teams_message_id TEXT NOT NULL,
                 last_message_at INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS auth_tokens (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
         """)
 
 
@@ -100,6 +105,23 @@ def delete_subscription(subscription_id: str) -> None:
             "DELETE FROM teams_subscription WHERE subscription_id = ?",
             (subscription_id,),
         )
+
+
+def save_refresh_token(token: str) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO auth_tokens (key, value) VALUES ('refresh_token', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (token,),
+        )
+
+
+def get_refresh_token() -> str | None:
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT value FROM auth_tokens WHERE key = 'refresh_token'"
+        ).fetchone()
+        return row["value"] if row else None
 
 
 _THREAD_TTL = 86400  # 24 horas em segundos

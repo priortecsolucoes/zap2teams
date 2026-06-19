@@ -34,7 +34,7 @@ async def setup_subscription() -> None:
         db.delete_subscription(existing["subscription_id"])
 
     # DB vazio mas pode haver subscription no Graph (ex: redeploy sem persistência)
-    resource = f"teams/{settings.teams_team_id}/channels/{settings.teams_channel_id}/messages"
+    resource = f"chats/{settings.teams_chat_id}/messages"
     try:
         all_subs = await teams_api.list_subscriptions()
         for graph_sub in all_subs:

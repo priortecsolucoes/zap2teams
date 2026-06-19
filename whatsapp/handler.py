@@ -91,7 +91,7 @@ async def handle_incoming(payload: dict) -> None:
 
     try:
         if active_thread:
-            await teams_api.post_reply_to_thread(
+            await teams_api.post_reply_to_chat(
                 active_thread["teams_message_id"],
                 sender_name,
                 text,
@@ -99,14 +99,13 @@ async def handle_incoming(payload: dict) -> None:
             db.update_thread_timestamp(chat_id)
             print(f"[WA→Teams] ✓ Reply na thread {active_thread['teams_message_id']}")
         else:
-            await teams_api.post_to_channel(
-                group_id=chat_id,
-                group_name=group_name,
+            await teams_api.post_to_chat(
                 sender_name=sender_name,
-                sender_number=sender_number,
-                message_text=text,
+                chat_name=group_name,
+                text=text,
+                wa_chat_id=chat_id,
                 wa_message_id=message_id,
             )
-            print(f"[WA→Teams] ✓ Nova thread criada")
+            print(f"[WA→Teams] ✓ Nova mensagem no chat")
     except Exception as e:
         print(f"[WA→Teams] Erro ao postar no Teams: {e}")

@@ -1,12 +1,13 @@
 import asyncio
 from contextlib import asynccontextmanager
 
+import httpx
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.responses import PlainTextResponse, Response
 
 from config import settings
-from storage.db import init_db
+from storage.db import init_db, save_refresh_token
 from teams.subscription import setup_subscription
 import whatsapp.handler as wa_handler
 import teams.handler as teams_handler
@@ -34,6 +35,54 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+async def _poll_device_code(device_code: str, interval: int) -> None:
+    for _ in range(60):
+        await asyncio.sleep(interval)
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.post(
+                f"https://login.microsoftonline.com/{settings.teams_tenant_id}/oauth2/v2.0/token",
+                data={
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                    "client_id": settings.teams_client_id,
+                    "device_code": device_code,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            data = resp.json()
+        if "refresh_token" in data:
+            save_refresh_token(data["refresh_token"])
+            print("[Auth] ✓ Autenticação concluída! Refresh token salvo.")
+            return
+        if data.get("error") not in ("authorization_pending", "slow_down"):
+            print(f"[Auth] Erro: {data.get('error')} — {data.get('error_description')}")
+            return
+    print("[Auth] Timeout na autenticação.")
+
+
+@app.get("/auth/setup")
+async def auth_setup():
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(
+            f"https://login.microsoftonline.com/{settings.teams_tenant_id}/oauth2/v2.0/devicecode",
+            data={
+                "client_id": settings.teams_client_id,
+                "scope": "offline_access ChatMessage.Send",
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    asyncio.create_task(_poll_device_code(data["device_code"], data.get("interval", 5)))
+
+    return PlainTextResponse(
+        f"1. Acesse: {data['verification_uri']}\n"
+        f"2. Digite o código: {data['user_code']}\n"
+        f"3. Faça login com sua conta Microsoft\n\n"
+        f"O servidor vai salvar o token automaticamente ao concluir."
+    )
 
 
 @app.get("/health")

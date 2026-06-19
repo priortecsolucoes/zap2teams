@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git commit -m ' *)",
+      "WebFetch(domain:docs.uazapi.com)"
+    ]
+  }
+}

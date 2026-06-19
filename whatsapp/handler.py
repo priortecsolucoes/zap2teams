@@ -38,6 +38,7 @@ async def handle_incoming(payload: dict) -> None:
     if msg and isinstance(msg, dict) and "chatid" in msg:
         # Uazapi flat format
         if msg.get("fromMe") or msg.get("wasSentByApi"):
+            print(f"[WA handler] ignorado fromMe={msg.get('fromMe')} wasSentByApi={msg.get('wasSentByApi')}")
             return
 
         group_id: str = msg.get("chatid", "")

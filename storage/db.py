@@ -137,6 +137,16 @@ def get_active_thread(chat_id: str) -> dict | None:
         return dict(row) if row else None
 
 
+def get_most_recent_thread() -> dict | None:
+    """Retorna a thread WA com atividade mais recente nas últimas 24h."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM chat_threads WHERE last_message_at > ? ORDER BY last_message_at DESC LIMIT 1",
+            (int(time.time()) - _THREAD_TTL,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def save_thread(chat_id: str, teams_message_id: str) -> None:
     with _conn() as conn:
         conn.execute(

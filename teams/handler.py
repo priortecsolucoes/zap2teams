@@ -30,7 +30,6 @@ async def _process_one(notification: dict) -> None:
     resource: str = notification.get("resource", "")
 
     if settings.teams_chat_id not in resource:
-        print(f"[Teams→WA] Ignorando chat diferente: {resource[:80]}")
         return
 
     reply_match = re.search(r"messages\('([^']+)'\)/replies\('([^']+)'\)$", resource)
@@ -43,44 +42,37 @@ async def _process_one(notification: dict) -> None:
     elif top_match:
         message_id = top_match.group(1)
         message = await teams_api.get_chat_message(message_id)
+        content_peek = (message.get("body") or {}).get("content", "")
         if not message.get("replyToId"):
-            _maybe_save_thread(message_id, message)
+            if "📱" in content_peek:
+                _maybe_save_thread(message_id, message)
+            else:
+                await _route_direct_message(message)
             return
         parent_message_id = message["replyToId"]
-        print(f"[Teams→WA] Mensagem com replyToId={parent_message_id}")
     else:
-        print(f"[Teams→WA] Resource sem match de regex: {resource}")
         return
 
-    msg_type = message.get("messageType")
-    if msg_type != "message":
-        print(f"[Teams→WA] Ignorando tipo: {msg_type}")
+    if message.get("messageType") != "message":
         return
 
-    # Ignorar mensagens do próprio app (bot)
     from_info = message.get("from") or {}
-    if from_info.get("application"):
-        print(f"[Teams→WA] Ignorando mensagem de aplicativo/bot")
-        return
-
     content: str = (message.get("body") or {}).get("content", "")
-    if "📱" in content and "[wa:" in content:
-        print(f"[Teams→WA] Ignorando própria mensagem do bridge")
+
+    if "📱" in content:
         return
 
     reply_text = _strip_html(content).strip()
     if not reply_text:
-        print(f"[Teams→WA] Mensagem sem texto")
         return
 
     sender_name: str = from_info.get("user", {}).get("displayName", "Colaborador")
-    print(f'[Teams→WA] Processando reply de "{sender_name}": "{reply_text[:80]}"')
 
     parent_message = await teams_api.get_chat_message(parent_message_id)
     parent_content: str = (parent_message.get("body") or {}).get("content", "")
     wa_match = re.search(r'\[wa:([^|\]]+)\|([^|\]]+)\|([^\]]+)\]', parent_content)
     if not wa_match:
-        print(f"[Teams→WA] Ref WA não encontrada na mensagem pai {parent_message_id}")
+        print(f"[Teams→WA] Ref WA não encontrada na msg pai {parent_message_id}")
         return
 
     wa_chat_id = wa_match.group(1).strip()
@@ -88,6 +80,30 @@ async def _process_one(notification: dict) -> None:
 
     print(f'[Teams→WA] "{sender_name}" → {wa_chat_id[:30]} | "{reply_text[:80]}"')
     await wa_api.send_reply(wa_chat_id, wa_message_id, reply_text)
+    db.update_thread_timestamp(wa_chat_id)
+    print(f"[Teams→WA] ✓ Enviado para {wa_chat_id[:30]}")
+
+
+async def _route_direct_message(message: dict) -> None:
+    if message.get("messageType") != "message":
+        return
+
+    from_info = message.get("from") or {}
+    content: str = (message.get("body") or {}).get("content", "")
+    reply_text = _strip_html(content).strip()
+    if not reply_text:
+        return
+
+    recent = db.get_most_recent_thread()
+    if not recent:
+        print("[Teams→WA] Sem thread WA ativa para rotear mensagem direta")
+        return
+
+    sender_name = from_info.get("user", {}).get("displayName", "Colaborador")
+    wa_chat_id = recent["chat_id"]
+    print(f'[Teams→WA] "{sender_name}" (direto) → {wa_chat_id[:30]} | "{reply_text[:80]}"')
+    await wa_api.send_text(wa_chat_id, reply_text)
+    db.update_thread_timestamp(wa_chat_id)
     print(f"[Teams→WA] ✓ Enviado para {wa_chat_id[:30]}")
 
 

@@ -30,6 +30,7 @@ async def _process_one(notification: dict) -> None:
     resource: str = notification.get("resource", "")
 
     if settings.teams_chat_id not in resource:
+        print(f"[Teams→WA] Ignorando chat diferente: {resource[:80]}")
         return
 
     reply_match = re.search(r"messages\('([^']+)'\)/replies\('([^']+)'\)$", resource)
@@ -46,26 +47,34 @@ async def _process_one(notification: dict) -> None:
             _maybe_save_thread(message_id, message)
             return
         parent_message_id = message["replyToId"]
+        print(f"[Teams→WA] Mensagem com replyToId={parent_message_id}")
     else:
+        print(f"[Teams→WA] Resource sem match de regex: {resource}")
         return
 
-    if message.get("messageType") != "message":
+    msg_type = message.get("messageType")
+    if msg_type != "message":
+        print(f"[Teams→WA] Ignorando tipo: {msg_type}")
         return
 
     # Ignorar mensagens do próprio app (bot)
     from_info = message.get("from") or {}
     if from_info.get("application"):
+        print(f"[Teams→WA] Ignorando mensagem de aplicativo/bot")
         return
 
     content: str = (message.get("body") or {}).get("content", "")
     if "📱" in content and "[wa:" in content:
+        print(f"[Teams→WA] Ignorando própria mensagem do bridge")
         return
 
     reply_text = _strip_html(content).strip()
     if not reply_text:
+        print(f"[Teams→WA] Mensagem sem texto")
         return
 
     sender_name: str = from_info.get("user", {}).get("displayName", "Colaborador")
+    print(f'[Teams→WA] Processando reply de "{sender_name}": "{reply_text[:80]}"')
 
     parent_message = await teams_api.get_chat_message(parent_message_id)
     parent_content: str = (parent_message.get("body") or {}).get("content", "")

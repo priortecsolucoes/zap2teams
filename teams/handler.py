@@ -84,8 +84,9 @@ async def _process_one(notification: dict) -> None:
     wa_chat_id = wa_match.group(1).strip()
     wa_message_id = wa_match.group(2).strip()
 
+    message_text = f"*{sender_name}:*\n{reply_text}"
     print(f'[Teams→WA] "{sender_name}" → {wa_chat_id[:30]} | "{reply_text[:80]}"')
-    await wa_api.send_reply(wa_chat_id, wa_message_id, reply_text)
+    await wa_api.send_reply(wa_chat_id, wa_message_id, message_text)
     db.update_thread_timestamp(wa_chat_id)
     print(f"[Teams→WA] ✓ Enviado para {wa_chat_id[:30]}")
 
@@ -107,8 +108,9 @@ async def _route_direct_message(message: dict, teams_chat_id: str) -> None:
         return
 
     sender_name = from_info.get("user", {}).get("displayName", "Colaborador")
+    message_text = f"*{sender_name}:*\n{reply_text}"
     print(f'[Teams→WA] "{sender_name}" (direto) → {wa_jid[:30]} | "{reply_text[:80]}"')
-    await wa_api.send_text(wa_jid, reply_text)
+    await wa_api.send_text(wa_jid, message_text)
     db.update_thread_timestamp(wa_jid)
     print(f"[Teams→WA] ✓ Enviado para {wa_jid[:30]}")
 

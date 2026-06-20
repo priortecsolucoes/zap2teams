@@ -86,6 +86,7 @@ def _esc(s: str) -> str:
 
 
 async def post_to_chat(
+    chat_id: str,
     sender_name: str,
     chat_name: str,
     text: str,
@@ -102,7 +103,7 @@ async def post_to_chat(
     )
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post(
-            f"https://graph.microsoft.com/v1.0/chats/{settings.teams_chat_id}/messages",
+            f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json={"body": {"contentType": "html", "content": content}},
         )
@@ -111,6 +112,7 @@ async def post_to_chat(
 
 
 async def post_reply_to_chat(
+    chat_id: str,
     parent_message_id: str,
     sender_name: str,
     text: str,
@@ -119,7 +121,7 @@ async def post_reply_to_chat(
     content = f"<p>📱 <strong>{_esc(sender_name)}:</strong> {_esc(text)}</p>"
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post(
-            f"https://graph.microsoft.com/v1.0/chats/{settings.teams_chat_id}"
+            f"https://graph.microsoft.com/v1.0/chats/{chat_id}"
             f"/messages/{parent_message_id}/replies",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json={"body": {"contentType": "html", "content": content}},
@@ -128,17 +130,17 @@ async def post_reply_to_chat(
             raise Exception(f"Chat reply {resp.status_code}: {resp.text}")
 
 
-async def get_chat_message(message_id: str) -> dict:
+async def get_chat_message(chat_id: str, message_id: str) -> dict:
     return await graph_request(
         "GET",
-        f"/chats/{settings.teams_chat_id}/messages/{message_id}",
+        f"/chats/{chat_id}/messages/{message_id}",
     )
 
 
-async def get_chat_reply(parent_message_id: str, reply_id: str) -> dict:
+async def get_chat_reply(chat_id: str, parent_message_id: str, reply_id: str) -> dict:
     return await graph_request(
         "GET",
-        f"/chats/{settings.teams_chat_id}/messages/{parent_message_id}/replies/{reply_id}",
+        f"/chats/{chat_id}/messages/{parent_message_id}/replies/{reply_id}",
     )
 
 

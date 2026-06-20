@@ -167,3 +167,13 @@ def update_thread_timestamp(chat_id: str) -> None:
             "UPDATE chat_threads SET last_message_at = ? WHERE chat_id = ?",
             (int(time.time()), chat_id),
         )
+
+
+def find_wa_jid_by_group_name(group_name: str) -> str | None:
+    """Retorna o JID WA mais recente associado ao nome de grupo informado."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT wa_group_id FROM message_map WHERE wa_group_name = ? ORDER BY id DESC LIMIT 1",
+            (group_name,),
+        ).fetchone()
+        return row["wa_group_id"] if row else None

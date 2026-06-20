@@ -1,4 +1,5 @@
 import teams.api as teams_api
+from config import settings
 from storage import db
 
 
@@ -87,11 +88,17 @@ async def handle_incoming(payload: dict) -> None:
 
     print(f'[WA→Teams] Chat: "{group_name}" | De: {sender_name} | Msg: "{text[:80]}"')
 
+    teams_chat_id = settings.wa_to_teams.get(group_name)
+    if not teams_chat_id:
+        print(f"[WA→Teams] Grupo '{group_name}' sem mapeamento Teams, ignorado")
+        return
+
     active_thread = db.get_active_thread(chat_id)
 
     try:
         if active_thread:
             await teams_api.post_reply_to_chat(
+                teams_chat_id,
                 active_thread["teams_message_id"],
                 sender_name,
                 text,
@@ -100,6 +107,7 @@ async def handle_incoming(payload: dict) -> None:
             print(f"[WA→Teams] ✓ Reply na thread {active_thread['teams_message_id']}")
         else:
             await teams_api.post_to_chat(
+                teams_chat_id,
                 sender_name=sender_name,
                 chat_name=group_name,
                 text=text,

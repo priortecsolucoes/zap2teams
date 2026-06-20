@@ -51,7 +51,7 @@ async def _process_one(notification: dict) -> None:
         content_peek = (message.get("body") or {}).get("content", "")
         if not message.get("replyToId"):
             if "📱" in content_peek:
-                _maybe_save_thread(message_id, message)
+                _maybe_save_thread(message_id, message, teams_chat_id)
             else:
                 await _route_direct_message(message, teams_chat_id)
             return
@@ -100,14 +100,10 @@ async def _route_direct_message(message: dict, teams_chat_id: str) -> None:
     if not reply_text:
         return
 
-    wa_group_name = settings.chat_mappings.get(teams_chat_id)
-    if not wa_group_name:
-        print(f"[Teams→WA] Sem mapeamento WA para chat {teams_chat_id[:40]}")
-        return
-
-    wa_jid = db.find_wa_jid_by_group_name(wa_group_name)
+    wa_jid = db.find_wa_jid_by_teams_chat(teams_chat_id)
     if not wa_jid:
-        print(f"[Teams→WA] JID WA não encontrado para grupo '{wa_group_name}' — aguardando primeira msg WA")
+        wa_group_name = settings.chat_mappings.get(teams_chat_id, teams_chat_id[:30])
+        print(f"[Teams→WA] JID WA não encontrado para '{wa_group_name}' — aguardando primeira msg WA")
         return
 
     sender_name = from_info.get("user", {}).get("displayName", "Colaborador")
@@ -117,12 +113,12 @@ async def _route_direct_message(message: dict, teams_chat_id: str) -> None:
     print(f"[Teams→WA] ✓ Enviado para {wa_jid[:30]}")
 
 
-def _maybe_save_thread(message_id: str, message: dict) -> None:
+def _maybe_save_thread(message_id: str, message: dict, teams_chat_id: str = "") -> None:
     content: str = (message.get("body") or {}).get("content", "")
     wa_match = re.search(r'\[wa:([^|\]]+)\|([^|\]]+)\|([^\]]+)\]', content)
     if wa_match:
         wa_chat_id = wa_match.group(1).strip()
-        db.save_thread(wa_chat_id, message_id)
+        db.save_thread(wa_chat_id, message_id, teams_chat_id)
         print(f"[Teams] Thread mapeada: {wa_chat_id[:30]} → {message_id}")
 
 

@@ -36,6 +36,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS chat_threads (
                 chat_id TEXT PRIMARY KEY,
+                teams_chat_id TEXT,
                 teams_message_id TEXT NOT NULL,
                 last_message_at INTEGER NOT NULL
             );
@@ -45,6 +46,10 @@ def init_db() -> None:
                 value TEXT NOT NULL
             );
         """)
+        try:
+            conn.execute("ALTER TABLE chat_threads ADD COLUMN teams_chat_id TEXT")
+        except Exception:
+            pass
 
 
 def save_message_map(entry: dict) -> None:
@@ -147,18 +152,30 @@ def get_most_recent_thread() -> dict | None:
         return dict(row) if row else None
 
 
-def save_thread(chat_id: str, teams_message_id: str) -> None:
+def save_thread(chat_id: str, teams_message_id: str, teams_chat_id: str = "") -> None:
     with _conn() as conn:
         conn.execute(
             """
-            INSERT INTO chat_threads (chat_id, teams_message_id, last_message_at)
-            VALUES (?, ?, ?)
+            INSERT INTO chat_threads (chat_id, teams_chat_id, teams_message_id, last_message_at)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(chat_id) DO UPDATE SET
+                teams_chat_id = excluded.teams_chat_id,
                 teams_message_id = excluded.teams_message_id,
                 last_message_at = excluded.last_message_at
             """,
-            (chat_id, teams_message_id, int(time.time())),
+            (chat_id, teams_chat_id, teams_message_id, int(time.time())),
         )
+
+
+def find_wa_jid_by_teams_chat(teams_chat_id: str) -> str | None:
+    """Retorna o JID WA com atividade mais recente nas últimas 24h para o chat Teams informado."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT chat_id FROM chat_threads WHERE teams_chat_id = ? AND last_message_at > ?"
+            " ORDER BY last_message_at DESC LIMIT 1",
+            (teams_chat_id, int(time.time()) - _THREAD_TTL),
+        ).fetchone()
+        return row["chat_id"] if row else None
 
 
 def update_thread_timestamp(chat_id: str) -> None:
@@ -169,11 +186,3 @@ def update_thread_timestamp(chat_id: str) -> None:
         )
 
 
-def find_wa_jid_by_group_name(group_name: str) -> str | None:
-    """Retorna o JID WA mais recente associado ao nome de grupo informado."""
-    with _conn() as conn:
-        row = conn.execute(
-            "SELECT wa_group_id FROM message_map WHERE wa_group_name = ? ORDER BY id DESC LIMIT 1",
-            (group_name,),
-        ).fetchone()
-        return row["wa_group_id"] if row else None

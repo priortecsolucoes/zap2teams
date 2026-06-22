@@ -19,16 +19,21 @@ def _extract_text(message: dict) -> str | None:
 
 
 def _extract_text_uazapi(msg: dict) -> str | None:
-    raw = msg.get("content") or msg.get("text")
-    text = raw if isinstance(raw, str) else ""
-    if text:
-        return text
+    raw = msg.get("content") or msg.get("text") or msg.get("body")
+    if isinstance(raw, str) and raw:
+        return raw
+    # Mensagem com citação: content pode ser dict com o texto dentro
+    if isinstance(raw, dict):
+        inner = raw.get("text") or raw.get("conversation") or raw.get("caption") or ""
+        if isinstance(inner, str) and inner:
+            return inner
     media = (msg.get("mediaType") or msg.get("messageType") or "").lower()
     if "audio" in media:
         return "[Áudio]"
     if "sticker" in media:
         return "[Figurinha]"
     if media:
+        print(f"[WA handler] mídia sem texto | messageType={msg.get('messageType')} | chaves msg={list(msg.keys())}")
         return "[Mídia não suportada]"
     return None
 

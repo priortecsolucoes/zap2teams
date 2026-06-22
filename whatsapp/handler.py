@@ -19,7 +19,8 @@ def _extract_text(message: dict) -> str | None:
 
 
 def _extract_text_uazapi(msg: dict) -> str | None:
-    text = msg.get("content") or msg.get("text") or ""
+    raw = msg.get("content") or msg.get("text")
+    text = raw if isinstance(raw, str) else ""
     if text:
         return text
     media = (msg.get("mediaType") or msg.get("messageType") or "").lower()
@@ -97,23 +98,27 @@ async def handle_incoming(payload: dict) -> None:
 
     try:
         if active_thread:
-            await teams_api.post_reply_to_chat(
-                teams_chat_id,
-                active_thread["teams_message_id"],
-                sender_name,
-                text,
-            )
-            db.update_thread_timestamp(chat_id)
-            print(f"[WA→Teams] ✓ Reply na thread {active_thread['teams_message_id']}")
-        else:
-            await teams_api.post_to_chat(
-                teams_chat_id,
-                sender_name=sender_name,
-                chat_name=group_name,
-                text=text,
-                wa_chat_id=chat_id,
-                wa_message_id=message_id,
-            )
-            print(f"[WA→Teams] ✓ Nova mensagem no chat")
+            try:
+                await teams_api.post_reply_to_chat(
+                    teams_chat_id,
+                    active_thread["teams_message_id"],
+                    sender_name,
+                    text,
+                )
+                db.update_thread_timestamp(chat_id)
+                print(f"[WA→Teams] ✓ Reply na thread {active_thread['teams_message_id']}")
+                return
+            except Exception as reply_err:
+                print(f"[WA→Teams] Falha ao responder thread ({reply_err}), postando nova mensagem...")
+
+        await teams_api.post_to_chat(
+            teams_chat_id,
+            sender_name=sender_name,
+            chat_name=group_name,
+            text=text,
+            wa_chat_id=chat_id,
+            wa_message_id=message_id,
+        )
+        print(f"[WA→Teams] ✓ Nova mensagem no chat")
     except Exception as e:
         print(f"[WA→Teams] Erro ao postar no Teams: {e}")

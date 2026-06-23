@@ -85,6 +85,46 @@ def _esc(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+async def post_image_to_chat(
+    chat_id: str,
+    sender_name: str,
+    chat_name: str,
+    image_bytes: bytes,
+    content_type: str,
+    wa_chat_id: str,
+    wa_message_id: str,
+    caption: str = "",
+) -> None:
+    import base64
+    token = await _get_delegated_token()
+    safe_sender = sender_name.replace("|", "").replace("[", "").replace("]", "")
+    ref = f"[wa:{wa_chat_id}|{wa_message_id}|{safe_sender}]"
+    caption_html = f"<p>{_esc(caption)}</p>" if caption else ""
+    content = (
+        f"<p>📱 <strong>{_esc(sender_name)}</strong> &nbsp;·&nbsp; {_esc(chat_name)}</p>"
+        f'<p><img src="../hostedContents/1/$value" style="max-width:600px"></p>'
+        f"{caption_html}"
+        f"<p><em><span style='font-size:11px;color:gray'>{ref}</span></em></p>"
+    )
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={
+                "body": {"contentType": "html", "content": content},
+                "hostedContents": [
+                    {
+                        "@microsoft.graph.temporaryId": "1",
+                        "contentBytes": base64.b64encode(image_bytes).decode(),
+                        "contentType": content_type,
+                    }
+                ],
+            },
+        )
+        if not resp.is_success:
+            raise Exception(f"Chat image post {resp.status_code}: {resp.text}")
+
+
 async def post_to_chat(
     chat_id: str,
     sender_name: str,

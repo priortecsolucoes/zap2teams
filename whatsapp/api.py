@@ -27,3 +27,10 @@ async def send_reply(chat_id: str, quoted_msg_id: str, text: str) -> dict:
         )
         resp.raise_for_status()
         return resp.json()
+
+
+async def download_media(url: str) -> bytes:
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return resp.content

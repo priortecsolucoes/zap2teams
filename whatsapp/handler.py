@@ -1,4 +1,5 @@
 import teams.api as teams_api
+import whatsapp.api as wa_api
 from config import settings
 from storage import db
 
@@ -27,21 +28,56 @@ def _extract_text_uazapi(msg: dict) -> str | None:
         inner = raw.get("text") or raw.get("conversation") or raw.get("caption") or ""
         if isinstance(inner, str) and inner:
             return inner
-    media = (msg.get("mediaType") or msg.get("messageType") or "").lower()
-    if "audio" in media:
-        return "[Áudio]"
-    if "sticker" in media:
-        return "[Figurinha]"
-    if media:
-        print(f"[WA handler] mídia sem texto | messageType={msg.get('messageType')} | chaves msg={list(msg.keys())}")
-        return "[Mídia não suportada]"
     return None
+
+
+def _uazapi_media(msg: dict) -> tuple[str, str, str, str]:
+    """Retorna (msg_type, media_url, mimetype, caption)."""
+    msg_type = (msg.get("messageType") or msg.get("mediaType") or "").lower()
+    media_url = msg.get("url") or msg.get("mediaUrl") or msg.get("fileUrl") or ""
+    if not isinstance(media_url, str):
+        media_url = ""
+    mimetype = (msg.get("mimetype") or msg.get("mimeType") or "").lower()
+    if not mimetype:
+        if "image" in msg_type:
+            mimetype = "image/jpeg"
+        elif "video" in msg_type:
+            mimetype = "video/mp4"
+        elif "document" in msg_type:
+            mimetype = "application/octet-stream"
+    caption = msg.get("caption") or ""
+    if not isinstance(caption, str):
+        caption = ""
+    return msg_type, media_url, mimetype, caption
+
+
+def _media_label(msg_type: str, caption: str, msg: dict) -> str:
+    cap = f" — {caption}" if caption else ""
+    if "image" in msg_type:
+        return f"📷 [Foto]{cap}"
+    if "video" in msg_type:
+        return f"🎥 [Vídeo]{cap}"
+    if "audio" in msg_type:
+        return f"🎵 [Áudio]{cap}"
+    if "document" in msg_type:
+        filename = msg.get("filename") or msg.get("fileName") or ""
+        name = f": {filename}" if filename else ""
+        return f"📄 [Documento{name}]{cap}"
+    if "sticker" in msg_type:
+        return "🖼️ [Figurinha]"
+    if "contact" in msg_type:
+        return f"👤 [Contato]{cap}"
+    return f"[{msg_type or 'Mídia'}]{cap}"
 
 
 async def handle_incoming(payload: dict) -> None:
     print(f"[WA handler] chaves: {list(payload.keys())}")
 
     msg = payload.get("message")
+    msg_type = ""
+    media_url = ""
+    mimetype = ""
+    caption = ""
 
     if msg and isinstance(msg, dict) and "chatid" in msg:
         # Uazapi flat format
@@ -60,6 +96,8 @@ async def handle_incoming(payload: dict) -> None:
             msg.get("groupName")
             or (chat_id.replace("@g.us", "") if is_group else sender_name)
         )
+
+        msg_type, media_url, mimetype, caption = _uazapi_media(msg)
         text = _extract_text_uazapi(msg)
 
     else:
@@ -88,11 +126,14 @@ async def handle_incoming(payload: dict) -> None:
         )
         text = _extract_text(data.get("message"))
 
-    if not text:
-        print(f"[WA handler] sem texto extraível")
+    is_image = bool("image" in msg_type and media_url)
+
+    if not text and not media_url:
+        print("[WA handler] sem texto nem mídia extraível")
         return
 
-    print(f'[WA→Teams] Chat: "{group_name}" | De: {sender_name} | Msg: "{text[:80]}"')
+    display = text or caption or _media_label(msg_type, caption, msg if "chatid" in (msg or {}) else {})
+    print(f'[WA→Teams] Chat: "{group_name}" | De: {sender_name} | Msg: "{display[:80]}"')
 
     teams_chat_id = settings.wa_to_teams.get(group_name)
     if not teams_chat_id:
@@ -102,13 +143,37 @@ async def handle_incoming(payload: dict) -> None:
     active_thread = db.get_active_thread(chat_id)
 
     try:
+        # Imagem em nova thread: enviar como hosted content no Teams
+        if is_image and not active_thread:
+            try:
+                image_bytes = await wa_api.download_media(media_url)
+                if len(image_bytes) > 4 * 1024 * 1024:
+                    raise Exception("imagem maior que 4 MB")
+                await teams_api.post_image_to_chat(
+                    teams_chat_id,
+                    sender_name=sender_name,
+                    chat_name=group_name,
+                    image_bytes=image_bytes,
+                    content_type=mimetype or "image/jpeg",
+                    wa_chat_id=chat_id,
+                    wa_message_id=message_id,
+                    caption=caption,
+                )
+                print("[WA→Teams] ✓ Imagem enviada ao chat")
+                return
+            except Exception as img_err:
+                print(f"[WA→Teams] Falha ao enviar imagem ({img_err}), enviando como texto")
+
+        # Texto a enviar (label de mídia se não houver texto)
+        send_text = text or _media_label(msg_type, caption, msg if "chatid" in (msg or {}) else {})
+
         if active_thread:
             try:
                 await teams_api.post_reply_to_chat(
                     teams_chat_id,
                     active_thread["teams_message_id"],
                     sender_name,
-                    text,
+                    send_text,
                 )
                 db.update_thread_timestamp(chat_id)
                 print(f"[WA→Teams] ✓ Reply na thread {active_thread['teams_message_id']}")
@@ -120,10 +185,10 @@ async def handle_incoming(payload: dict) -> None:
             teams_chat_id,
             sender_name=sender_name,
             chat_name=group_name,
-            text=text,
+            text=send_text,
             wa_chat_id=chat_id,
             wa_message_id=message_id,
         )
-        print(f"[WA→Teams] ✓ Nova mensagem no chat")
+        print("[WA→Teams] ✓ Nova mensagem no chat")
     except Exception as e:
         print(f"[WA→Teams] Erro ao postar no Teams: {e}")

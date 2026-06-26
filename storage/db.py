@@ -168,12 +168,12 @@ def save_thread(chat_id: str, teams_message_id: str, teams_chat_id: str = "") ->
 
 
 def find_wa_jid_by_teams_chat(teams_chat_id: str) -> str | None:
-    """Retorna o JID WA com atividade mais recente nas últimas 24h para o chat Teams informado."""
+    """Retorna o JID WA mais recente mapeado ao chat Teams, sem restrição de tempo."""
     with _conn() as conn:
         row = conn.execute(
-            "SELECT chat_id FROM chat_threads WHERE teams_chat_id = ? AND last_message_at > ?"
+            "SELECT chat_id FROM chat_threads WHERE teams_chat_id = ?"
             " ORDER BY last_message_at DESC LIMIT 1",
-            (teams_chat_id, int(time.time()) - _THREAD_TTL),
+            (teams_chat_id,),
         ).fetchone()
         return row["chat_id"] if row else None
 

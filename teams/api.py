@@ -125,6 +125,31 @@ async def post_image_to_chat(
             raise Exception(f"Chat image post {resp.status_code}: {resp.text}")
 
 
+async def post_image_only(chat_id: str, image_bytes: bytes, content_type: str) -> None:
+    import base64
+    token = await _get_delegated_token()
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={
+                "body": {
+                    "contentType": "html",
+                    "content": '<p><img src="../hostedContents/1/$value" style="max-width:600px"></p>',
+                },
+                "hostedContents": [
+                    {
+                        "@microsoft.graph.temporaryId": "1",
+                        "contentBytes": base64.b64encode(image_bytes).decode(),
+                        "contentType": content_type,
+                    }
+                ],
+            },
+        )
+        if not resp.is_success:
+            raise Exception(f"Chat image post {resp.status_code}: {resp.text}")
+
+
 async def post_to_chat(
     chat_id: str,
     sender_name: str,

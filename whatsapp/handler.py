@@ -140,11 +140,32 @@ async def handle_incoming(payload: dict) -> None:
         print(f"[WA→Teams] Grupo '{group_name}' sem mapeamento Teams, ignorado")
         return
 
-    active_thread = db.get_active_thread(chat_id)
+    is_uazapi_msg = isinstance(msg, dict) and "chatid" in msg
+    media_ctx = msg if is_uazapi_msg else {}
 
     try:
-        # Imagem em nova thread: enviar como hosted content no Teams
-        if is_image and not active_thread:
+        if text and is_image:
+            # Texto + imagem: posta o texto primeiro (com ref [wa:]) e depois a imagem
+            await teams_api.post_to_chat(
+                teams_chat_id,
+                sender_name=sender_name,
+                chat_name=group_name,
+                text=text,
+                wa_chat_id=chat_id,
+                wa_message_id=message_id,
+            )
+            print("[WA→Teams] ✓ Texto enviado ao chat")
+            try:
+                image_bytes = await wa_api.download_media(media_url)
+                if len(image_bytes) > 4 * 1024 * 1024:
+                    raise Exception("imagem maior que 4 MB")
+                await teams_api.post_image_only(teams_chat_id, image_bytes, mimetype or "image/jpeg")
+                print("[WA→Teams] ✓ Imagem enviada ao chat")
+            except Exception as img_err:
+                print(f"[WA→Teams] Falha ao enviar imagem ({img_err})")
+
+        elif is_image:
+            # Só imagem (sem texto): posta com cabeçalho de remetente e ref [wa:]
             try:
                 image_bytes = await wa_api.download_media(media_url)
                 if len(image_bytes) > 4 * 1024 * 1024:
@@ -160,35 +181,30 @@ async def handle_incoming(payload: dict) -> None:
                     caption=caption,
                 )
                 print("[WA→Teams] ✓ Imagem enviada ao chat")
-                return
             except Exception as img_err:
                 print(f"[WA→Teams] Falha ao enviar imagem ({img_err}), enviando como texto")
-
-        # Texto a enviar (label de mídia se não houver texto)
-        send_text = text or _media_label(msg_type, caption, msg if "chatid" in (msg or {}) else {})
-
-        if active_thread:
-            try:
-                await teams_api.post_reply_to_chat(
+                await teams_api.post_to_chat(
                     teams_chat_id,
-                    active_thread["teams_message_id"],
-                    sender_name,
-                    send_text,
+                    sender_name=sender_name,
+                    chat_name=group_name,
+                    text=_media_label(msg_type, caption, media_ctx),
+                    wa_chat_id=chat_id,
+                    wa_message_id=message_id,
                 )
-                db.update_thread_timestamp(chat_id)
-                print(f"[WA→Teams] ✓ Reply na thread {active_thread['teams_message_id']}")
-                return
-            except Exception as reply_err:
-                print(f"[WA→Teams] Falha ao responder thread ({reply_err}), postando nova mensagem...")
+                print("[WA→Teams] ✓ Texto (fallback) enviado ao chat")
 
-        await teams_api.post_to_chat(
-            teams_chat_id,
-            sender_name=sender_name,
-            chat_name=group_name,
-            text=send_text,
-            wa_chat_id=chat_id,
-            wa_message_id=message_id,
-        )
-        print("[WA→Teams] ✓ Nova mensagem no chat")
+        else:
+            # Texto ou label de mídia
+            send_text = text or _media_label(msg_type, caption, media_ctx)
+            await teams_api.post_to_chat(
+                teams_chat_id,
+                sender_name=sender_name,
+                chat_name=group_name,
+                text=send_text,
+                wa_chat_id=chat_id,
+                wa_message_id=message_id,
+            )
+            print("[WA→Teams] ✓ Nova mensagem no chat")
+
     except Exception as e:
         print(f"[WA→Teams] Erro ao postar no Teams: {e}")

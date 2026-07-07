@@ -19,31 +19,22 @@ async def send_text(chat_id: str, text: str) -> dict:
 
 
 async def send_image(chat_id: str, image_bytes: bytes, mimetype: str, caption: str = "") -> dict:
-    """Envia imagem via Uazapi, tentando múltiplos endpoints/formatos."""
-    import base64
-    b64_raw = base64.b64encode(image_bytes).decode()
-    b64_full = f"data:{mimetype};base64,{b64_raw}"
-    errors = []
+    """Envia imagem via Uazapi usando multipart/form-data no endpoint /send/media."""
+    ext = mimetype.split("/")[-1].split("+")[0] if "/" in mimetype else "jpg"
+    filename = f"image.{ext}"
+    # Sem Content-Type no header: httpx seta multipart/form-data automaticamente
+    headers = {"token": settings.uazapi_token}
     async with httpx.AsyncClient(timeout=30) as client:
-        for path, payload in [
-            ("/send/image",  {"number": chat_id, "image":  b64_raw,  "caption": caption}),
-            ("/send/image",  {"number": chat_id, "base64": b64_full, "caption": caption}),
-            ("/send/base64", {"number": chat_id, "base64": b64_full, "type": "image", "caption": caption}),
-            ("/send/media",  {"number": chat_id, "type": "image", "base64": b64_raw, "caption": caption}),
-        ]:
-            try:
-                resp = await client.post(
-                    f"{settings.uazapi_base}{path}",
-                    headers=_headers(),
-                    json=payload,
-                )
-                if resp.is_success:
-                    print(f"[WA API] send_image OK via {path}")
-                    return resp.json() if resp.content else {}
-                errors.append(f"POST {path}: {resp.status_code} {resp.text[:120]}")
-            except Exception as e:
-                errors.append(f"POST {path}: {e}")
-    raise Exception(f"send_image falhou em todos os endpoints: {errors}")
+        resp = await client.post(
+            f"{settings.uazapi_base}/send/media",
+            headers=headers,
+            files={"file": (filename, image_bytes, mimetype)},
+            data={"number": chat_id, "caption": caption},
+        )
+        if resp.is_success:
+            print(f"[WA API] send_image OK via /send/media")
+            return resp.json() if resp.content else {}
+        raise Exception(f"POST /send/media: {resp.status_code} {resp.text[:200]}")
 
 
 async def send_reply(chat_id: str, quoted_msg_id: str, text: str) -> dict:

@@ -19,26 +19,46 @@ async def send_text(chat_id: str, text: str) -> dict:
 
 
 async def send_image(chat_id: str, image_bytes: bytes, mimetype: str, caption: str = "") -> dict:
-    """Envia imagem via Uazapi usando multipart/form-data no endpoint /send/media."""
+    """Envia imagem via Uazapi: metadados como query params, arquivo como multipart."""
     ext = mimetype.split("/")[-1].split("+")[0] if "/" in mimetype else "jpg"
     filename = f"image.{ext}"
     headers = {"token": settings.uazapi_token}
-    # Lista de tuplas garante que campos texto e arquivo sejam enviados no mesmo multipart
-    multipart = [
-        ("number",  (None, chat_id)),
-        ("caption", (None, caption or "")),
-        ("file",    (filename, image_bytes, mimetype)),
-    ]
+    errors = []
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"{settings.uazapi_base}/send/media",
-            headers=headers,
-            files=multipart,
-        )
-        if resp.is_success:
-            print(f"[WA API] send_image OK via /send/media")
-            return resp.json() if resp.content else {}
-        raise Exception(f"POST /send/media: {resp.status_code} {resp.text[:200]}")
+        # Tentativa 1: number/caption como query params + arquivo em multipart
+        try:
+            resp = await client.post(
+                f"{settings.uazapi_base}/send/media",
+                headers=headers,
+                params={"number": chat_id, "caption": caption or ""},
+                files={"file": (filename, image_bytes, mimetype)},
+            )
+            if resp.is_success:
+                print("[WA API] send_image OK (query params + multipart)")
+                return resp.json() if resp.content else {}
+            errors.append(f"query+multipart: {resp.status_code} {resp.text[:120]}")
+        except Exception as e:
+            errors.append(f"query+multipart: {e}")
+
+        # Tentativa 2: chatId em vez de number (campo alternativo)
+        try:
+            resp = await client.post(
+                f"{settings.uazapi_base}/send/media",
+                headers=headers,
+                files=[
+                    ("chatId",  (None, chat_id)),
+                    ("caption", (None, caption or "")),
+                    ("file",    (filename, image_bytes, mimetype)),
+                ],
+            )
+            if resp.is_success:
+                print("[WA API] send_image OK (chatId multipart)")
+                return resp.json() if resp.content else {}
+            errors.append(f"chatId multipart: {resp.status_code} {resp.text[:120]}")
+        except Exception as e:
+            errors.append(f"chatId multipart: {e}")
+
+    raise Exception(f"send_image falhou: {errors}")
 
 
 async def send_reply(chat_id: str, quoted_msg_id: str, text: str) -> dict:

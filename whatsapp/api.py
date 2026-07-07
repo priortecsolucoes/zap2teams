@@ -22,14 +22,18 @@ async def send_image(chat_id: str, image_bytes: bytes, mimetype: str, caption: s
     """Envia imagem via Uazapi usando multipart/form-data no endpoint /send/media."""
     ext = mimetype.split("/")[-1].split("+")[0] if "/" in mimetype else "jpg"
     filename = f"image.{ext}"
-    # Sem Content-Type no header: httpx seta multipart/form-data automaticamente
     headers = {"token": settings.uazapi_token}
+    # Lista de tuplas garante que campos texto e arquivo sejam enviados no mesmo multipart
+    multipart = [
+        ("number",  (None, chat_id)),
+        ("caption", (None, caption or "")),
+        ("file",    (filename, image_bytes, mimetype)),
+    ]
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             f"{settings.uazapi_base}/send/media",
             headers=headers,
-            files={"file": (filename, image_bytes, mimetype)},
-            data={"number": chat_id, "caption": caption},
+            files=multipart,
         )
         if resp.is_success:
             print(f"[WA API] send_image OK via /send/media")

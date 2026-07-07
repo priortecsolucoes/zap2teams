@@ -27,7 +27,7 @@ async def send_image(chat_id: str, image_bytes: bytes, mimetype: str, caption: s
     errors = []
 
     async with httpx.AsyncClient(timeout=30) as client:
-        # Tentativa 1: JSON com imagem em base64 (evita problema de multipart)
+        # Tentativa 1: JSON com campo "file" em base64 (Uazapi aceita JSON, não multipart)
         try:
             resp = await client.post(
                 f"{settings.uazapi_base}/send/media",
@@ -35,18 +35,16 @@ async def send_image(chat_id: str, image_bytes: bytes, mimetype: str, caption: s
                 json={
                     "number": chat_id,
                     "caption": caption or "",
-                    "base64": _b64.b64encode(image_bytes).decode(),
+                    "file": _b64.b64encode(image_bytes).decode(),
                     "mimetype": mimetype,
-                    "mediatype": mimetype,
-                    "filename": filename,
                 },
             )
             if resp.is_success:
-                print("[WA API] send_image OK (JSON+base64)")
+                print("[WA API] send_image OK (JSON file=base64)")
                 return resp.json() if resp.content else {}
-            errors.append(f"json+base64: {resp.status_code} {resp.text[:120]}")
+            errors.append(f"json+file: {resp.status_code} {resp.text[:120]}")
         except Exception as e:
-            errors.append(f"json+base64: {e}")
+            errors.append(f"json+file: {e}")
 
         # Tentativa 2: número no path da URL + arquivo em multipart
         try:

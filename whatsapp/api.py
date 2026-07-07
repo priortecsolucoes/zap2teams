@@ -18,6 +18,24 @@ async def send_text(chat_id: str, text: str) -> dict:
         return resp.json()
 
 
+async def send_image(chat_id: str, image_bytes: bytes, mimetype: str, caption: str = "") -> dict:
+    """Envia imagem via Uazapi usando base64."""
+    import base64
+    b64 = base64.b64encode(image_bytes).decode()
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{settings.uazapi_base}/send/image",
+            headers=_headers(),
+            json={
+                "number": chat_id,
+                "base64": f"data:{mimetype};base64,{b64}",
+                "caption": caption,
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
 async def send_reply(chat_id: str, quoted_msg_id: str, text: str) -> dict:
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(

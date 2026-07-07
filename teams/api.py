@@ -81,6 +81,19 @@ async def graph_request(method: str, path: str, body: dict | None = None) -> dic
         return resp.json() if resp.content else {}
 
 
+async def download_graph_binary(path: str) -> tuple[bytes, str]:
+    """Baixa conteúdo binário da Graph API (ex: hostedContents de imagens)."""
+    token = await _get_access_token()
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        resp = await client.get(
+            f"https://graph.microsoft.com/v1.0{path}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if not resp.is_success:
+            raise Exception(f"Graph binary {resp.status_code}: {resp.text[:200]}")
+        return resp.content, resp.headers.get("content-type", "image/jpeg")
+
+
 def _esc(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 

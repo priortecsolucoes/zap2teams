@@ -144,6 +144,8 @@ async def handle_incoming(payload: dict) -> None:
         )
 
         msg_type, media_url, mimetype, caption = _uazapi_media(msg)
+        if "image" in msg_type or "video" in msg_type or "audio" in msg_type or "document" in msg_type:
+            print(f"[WA handler] MÍDIA detectada | type={msg_type!r} | url={media_url!r} | msg={str(msg)[:1000]}")
         # Fallback 1: Uazapi pode colocar URL no root do payload
         if not media_url:
             _, media_url_root, mimetype_root, caption_root = _uazapi_media(payload)

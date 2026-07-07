@@ -40,24 +40,28 @@ def _uazapi_media(msg: dict) -> tuple[str, str, str, str]:
     mimetype = (msg.get("mimetype") or msg.get("mimeType") or "").lower()
     caption = msg.get("caption") or ""
 
-    # Uazapi pode colocar dados da mídia dentro de "content" (dict)
+    # Uazapi pode colocar dados da mídia dentro de "content"
     content = msg.get("content")
+    # content como string URL completa
+    if not media_url and isinstance(content, str) and content.startswith("http"):
+        media_url = content
+    # content como dict com campos de mídia
     if not media_url and isinstance(content, dict):
-        # Tenta URL diretamente no content
-        media_url = content.get("url") or content.get("mediaUrl") or content.get("directPath") or ""
-        if not isinstance(media_url, str):
-            media_url = ""
+        # Usa apenas URLs completas (nunca directPath, que não é downloadável)
+        cand = content.get("url") or content.get("mediaUrl") or ""
+        if isinstance(cand, str) and cand.startswith("http"):
+            media_url = cand
         if not mimetype:
             mimetype = (content.get("mimetype") or content.get("mimeType") or "").lower()
         if not caption:
             caption = content.get("caption") or ""
-        # Tenta sub-chaves imageMessage/videoMessage etc. dentro de content
+        # sub-chaves imageMessage/videoMessage etc. dentro de content
         if not media_url:
             for key in ("imageMessage", "videoMessage", "audioMessage", "documentMessage", "stickerMessage"):
                 inner = content.get(key)
                 if isinstance(inner, dict):
-                    inner_url = inner.get("url") or inner.get("directPath") or ""
-                    if isinstance(inner_url, str) and inner_url:
+                    inner_url = inner.get("url") or ""
+                    if isinstance(inner_url, str) and inner_url.startswith("http"):
                         media_url = inner_url
                         if not msg_type:
                             msg_type = key.lower()
@@ -98,6 +102,18 @@ def _media_label(msg_type: str, caption: str, msg: dict) -> str:
     if "contact" in msg_type:
         return f"👤 [Contato]{cap}"
     return f"[{msg_type or 'Mídia'}]{cap}"
+
+
+async def _download_image(media_url: str, message_id: str, chat_id: str, is_uazapi: bool) -> bytes:
+    """Tenta baixar a imagem: primeiro URL direta, depois API Uazapi por ID."""
+    if media_url and media_url.startswith("http"):
+        try:
+            return await wa_api.download_media(media_url)
+        except Exception as e:
+            print(f"[WA handler] Download direto falhou ({e}), tentando via Uazapi API...")
+    if is_uazapi and message_id:
+        return await wa_api.download_media_by_id(message_id, chat_id)
+    raise Exception(f"Sem URL válida e sem message_id para download (url={media_url!r})")
 
 
 async def handle_incoming(payload: dict) -> None:
@@ -141,27 +157,23 @@ async def handle_incoming(payload: dict) -> None:
         if not media_url:
             inner = msg.get("message") or {}
             if isinstance(inner, dict):
-                img = inner.get("imageMessage") or {}
-                vid = inner.get("videoMessage") or {}
-                doc = inner.get("documentMessage") or {}
-                aud = inner.get("audioMessage") or {}
-                sub = img or vid or doc or aud
-                if sub:
-                    media_url = sub.get("url") or sub.get("directPath") or ""
-                    mimetype = (sub.get("mimetype") or "").lower()
-                    caption = sub.get("caption") or ""
-                    if img:
-                        msg_type = "imagemessage"
-                    elif vid:
-                        msg_type = "videomessage"
-                    elif doc:
-                        msg_type = "documentmessage"
-                    elif aud:
-                        msg_type = "audiomessage"
-                    if media_url:
-                        print(f"[WA handler] URL de mídia encontrada no msg.message: {media_url[:80]}")
-        if not media_url:
-            print(f"[WA handler] DEBUG mídia não encontrada | msg_type={msg_type!r} | keys={list(msg.keys())} | sample={str(msg)[:500]}")
+                for _key, _mtype in [
+                    ("imageMessage", "imagemessage"),
+                    ("videoMessage", "videomessage"),
+                    ("audioMessage", "audiomessage"),
+                    ("documentMessage", "documentmessage"),
+                ]:
+                    sub = inner.get(_key)
+                    if isinstance(sub, dict):
+                        # Usa apenas URL completa — directPath não é downloadável
+                        cand = sub.get("url") or ""
+                        if isinstance(cand, str) and cand.startswith("http"):
+                            media_url = cand
+                            msg_type = msg_type or _mtype
+                            mimetype = mimetype or (sub.get("mimetype") or "").lower()
+                            caption = caption or (sub.get("caption") or "")
+                            print(f"[WA handler] URL de mídia encontrada no msg.message.{_key}: {media_url[:80]}")
+                        break
         text = _extract_text_uazapi(msg)
 
     else:
@@ -190,9 +202,9 @@ async def handle_incoming(payload: dict) -> None:
         )
         text = _extract_text(data.get("message"))
 
-    is_image = bool("image" in msg_type and media_url)
+    is_image = "image" in msg_type
 
-    if not text and not media_url:
+    if not text and not media_url and not is_image:
         print("[WA handler] sem texto nem mídia extraível")
         return
 
@@ -220,7 +232,7 @@ async def handle_incoming(payload: dict) -> None:
             )
             print("[WA→Teams] ✓ Texto enviado ao chat")
             try:
-                image_bytes = await wa_api.download_media(media_url)
+                image_bytes = await _download_image(media_url, message_id, chat_id, is_uazapi_msg)
                 if len(image_bytes) > 4 * 1024 * 1024:
                     raise Exception("imagem maior que 4 MB")
                 await teams_api.post_image_only(teams_chat_id, image_bytes, mimetype or "image/jpeg")
@@ -231,7 +243,7 @@ async def handle_incoming(payload: dict) -> None:
         elif is_image:
             # Só imagem (sem texto): posta com cabeçalho de remetente e ref [wa:]
             try:
-                image_bytes = await wa_api.download_media(media_url)
+                image_bytes = await _download_image(media_url, message_id, chat_id, is_uazapi_msg)
                 if len(image_bytes) > 4 * 1024 * 1024:
                     raise Exception("imagem maior que 4 MB")
                 await teams_api.post_image_to_chat(

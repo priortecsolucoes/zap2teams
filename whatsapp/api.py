@@ -34,3 +34,21 @@ async def download_media(url: str) -> bytes:
         resp = await client.get(url)
         resp.raise_for_status()
         return resp.content
+
+
+async def download_media_by_id(message_id: str, chat_id: str) -> bytes:
+    """Baixa mídia via API do Uazapi usando o ID da mensagem (Uazapi descriptografa internamente)."""
+    import base64
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{settings.uazapi_base}/message/download-media",
+            headers=_headers(),
+            json={"messageId": message_id, "chatId": chat_id},
+        )
+        resp.raise_for_status()
+        ct = resp.headers.get("content-type", "")
+        if "json" in ct:
+            data = resp.json()
+            b64 = data.get("data") or data.get("base64") or data.get("media") or ""
+            return base64.b64decode(b64)
+        return resp.content

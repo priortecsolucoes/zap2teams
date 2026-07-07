@@ -104,21 +104,65 @@ def _media_label(msg_type: str, caption: str, msg: dict) -> str:
     return f"[{msg_type or 'Mídia'}]{cap}"
 
 
-async def _download_image(
-    media_url: str, message_id: str, chat_id: str, is_uazapi: bool, thumbnail_b64: str = ""
-) -> bytes:
-    """Obtém bytes da imagem: thumbnail do payload → URL direta → API Uazapi."""
+def _decrypt_wa_media(encrypted_bytes: bytes, media_key_b64: str, msg_type: str) -> bytes:
+    """Descriptografa mídia do WhatsApp com AES-256-CBC usando chave derivada via HKDF-SHA256."""
     import base64
-    # Thumbnail já vem no payload do Uazapi como JPEG válido (sem criptografia)
-    if thumbnail_b64:
-        print("[WA handler] Usando thumbnail JPEG do payload Uazapi")
-        return base64.b64decode(thumbnail_b64)
-    # URL direta (funciona em algumas configurações)
-    if media_url and media_url.startswith("http"):
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    padded = media_key_b64 + "=" * (-len(media_key_b64) % 4)
+    media_key = base64.b64decode(padded)
+
+    if "image" in msg_type or "sticker" in msg_type:
+        info = b"WhatsApp Image Keys"
+    elif "video" in msg_type:
+        info = b"WhatsApp Video Keys"
+    elif "audio" in msg_type:
+        info = b"WhatsApp Audio Keys"
+    elif "document" in msg_type:
+        info = b"WhatsApp Document Keys"
+    else:
+        info = b"WhatsApp Image Keys"
+
+    keys = HKDF(algorithm=hashes.SHA256(), length=112, salt=b"\x00" * 32, info=info).derive(media_key)
+    iv, cipher_key = keys[0:16], keys[16:48]
+
+    # Formato: [dados_cifrados][10 bytes de MAC]
+    ciphertext = encrypted_bytes[:-10]
+    decryptor = Cipher(algorithms.AES(cipher_key), modes.CBC(iv)).decryptor()
+    plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+
+    # Remove padding PKCS7
+    pad_len = plaintext[-1]
+    return plaintext[:-pad_len] if 1 <= pad_len <= 16 else plaintext
+
+
+async def _download_image(
+    media_url: str, message_id: str, chat_id: str, is_uazapi: bool,
+    thumbnail_b64: str = "", media_key_b64: str = "", msg_type: str = ""
+) -> bytes:
+    """Obtém bytes da imagem: CDN+decrypt → URL direta → API Uazapi → thumbnail."""
+    import base64
+    # CDN + descriptografia (imagem em resolução completa)
+    if media_url and media_url.startswith("http") and media_key_b64:
+        try:
+            encrypted = await wa_api.download_media(media_url)
+            decrypted = _decrypt_wa_media(encrypted, media_key_b64, msg_type)
+            print("[WA handler] Imagem descriptografada com sucesso (resolução completa)")
+            return decrypted
+        except Exception as e:
+            print(f"[WA handler] Descriptografia falhou ({e}), tentando thumbnail...")
+    # URL direta sem criptografia (algumas configurações)
+    elif media_url and media_url.startswith("http") and not media_key_b64:
         try:
             return await wa_api.download_media(media_url)
         except Exception as e:
-            print(f"[WA handler] Download direto falhou ({e}), tentando via Uazapi API...")
+            print(f"[WA handler] Download direto falhou ({e})")
+    # Thumbnail do payload (baixa resolução, mas imediatamente disponível)
+    if thumbnail_b64:
+        print("[WA handler] Usando thumbnail JPEG do payload Uazapi (baixa resolução)")
+        return base64.b64decode(thumbnail_b64)
     # API Uazapi por ID
     if is_uazapi and message_id:
         try:
@@ -137,6 +181,7 @@ async def handle_incoming(payload: dict) -> None:
     mimetype = ""
     caption = ""
     thumbnail_b64 = ""
+    media_key_b64 = ""
 
     if msg and isinstance(msg, dict) and "chatid" in msg:
         # Uazapi flat format
@@ -161,6 +206,7 @@ async def handle_incoming(payload: dict) -> None:
         _content = msg.get("content")
         if isinstance(_content, dict):
             thumbnail_b64 = _content.get("JPEGThumbnail") or ""
+            media_key_b64 = _content.get("mediaKey") or ""
             if not mimetype:
                 mimetype = (_content.get("mimetype") or "").lower()
             if not media_url:
@@ -255,7 +301,7 @@ async def handle_incoming(payload: dict) -> None:
             )
             print("[WA→Teams] ✓ Texto enviado ao chat")
             try:
-                image_bytes = await _download_image(media_url, message_id, chat_id, is_uazapi_msg, thumbnail_b64)
+                image_bytes = await _download_image(media_url, message_id, chat_id, is_uazapi_msg, thumbnail_b64, media_key_b64, msg_type)
                 if len(image_bytes) > 4 * 1024 * 1024:
                     raise Exception("imagem maior que 4 MB")
                 await teams_api.post_image_only(teams_chat_id, image_bytes, mimetype or "image/jpeg")
@@ -266,7 +312,7 @@ async def handle_incoming(payload: dict) -> None:
         elif is_image:
             # Só imagem (sem texto): posta com cabeçalho de remetente e ref [wa:]
             try:
-                image_bytes = await _download_image(media_url, message_id, chat_id, is_uazapi_msg, thumbnail_b64)
+                image_bytes = await _download_image(media_url, message_id, chat_id, is_uazapi_msg, thumbnail_b64, media_key_b64, msg_type)
                 if len(image_bytes) > 4 * 1024 * 1024:
                     raise Exception("imagem maior que 4 MB")
                 await teams_api.post_image_to_chat(

@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(git commit -m ' *)",
-      "WebFetch(domain:docs.uazapi.com)"
+      "WebFetch(domain:docs.uazapi.com)",
+      "Bash(python -c \"from cryptography.hazmat.primitives.kdf.hkdf import HKDF; print\\('cryptography OK'\\)\")"
     ]
   }
 }

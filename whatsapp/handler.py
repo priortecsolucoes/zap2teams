@@ -98,6 +98,40 @@ async def handle_incoming(payload: dict) -> None:
         )
 
         msg_type, media_url, mimetype, caption = _uazapi_media(msg)
+        # Fallback 1: Uazapi pode colocar URL no root do payload
+        if not media_url:
+            _, media_url_root, mimetype_root, caption_root = _uazapi_media(payload)
+            if media_url_root:
+                msg_type = msg_type or (msg.get("messageType") or payload.get("messageType") or "").lower()
+                media_url = media_url_root
+                mimetype = mimetype_root or mimetype
+                caption = caption_root or caption
+                print(f"[WA handler] URL de mídia encontrada no root payload: {media_url[:80]}")
+        # Fallback 2: msg pode ter sub-objeto "message" com formato Evolution (imageMessage etc.)
+        if not media_url:
+            inner = msg.get("message") or {}
+            if isinstance(inner, dict):
+                img = inner.get("imageMessage") or {}
+                vid = inner.get("videoMessage") or {}
+                doc = inner.get("documentMessage") or {}
+                aud = inner.get("audioMessage") or {}
+                sub = img or vid or doc or aud
+                if sub:
+                    media_url = sub.get("url") or sub.get("directPath") or ""
+                    mimetype = (sub.get("mimetype") or "").lower()
+                    caption = sub.get("caption") or ""
+                    if img:
+                        msg_type = "imagemessage"
+                    elif vid:
+                        msg_type = "videomessage"
+                    elif doc:
+                        msg_type = "documentmessage"
+                    elif aud:
+                        msg_type = "audiomessage"
+                    if media_url:
+                        print(f"[WA handler] URL de mídia encontrada no msg.message: {media_url[:80]}")
+        if not media_url and not (msg.get("content") or msg.get("text") or msg.get("body") or msg.get("conversation")):
+            print(f"[WA handler] msg keys: {list(msg.keys())} | msg sample: {str(msg)[:400]}")
         text = _extract_text_uazapi(msg)
 
     else:

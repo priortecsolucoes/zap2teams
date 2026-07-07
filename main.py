@@ -7,7 +7,7 @@ from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.responses import PlainTextResponse, Response
 
 from config import settings
-from storage.db import init_db, save_refresh_token
+from storage.db import init_db, save_refresh_token, seed_chat_threads
 from teams.subscription import setup_subscription
 import whatsapp.handler as wa_handler
 import teams.handler as teams_handler
@@ -30,6 +30,7 @@ async def _setup_subscription_when_ready() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    seed_chat_threads(settings.wa_jid_mappings)
     asyncio.create_task(_setup_subscription_when_ready())
     yield
 

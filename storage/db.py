@@ -1,8 +1,10 @@
+import os
 import sqlite3
 import time
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent.parent / "data.db"
+_default_db = Path(__file__).parent.parent / "data.db"
+DB_PATH = Path(os.environ.get("DATABASE_PATH", str(_default_db)))
 
 
 def _conn() -> sqlite3.Connection:
@@ -165,6 +167,25 @@ def save_thread(chat_id: str, teams_message_id: str, teams_chat_id: str = "") ->
             """,
             (chat_id, teams_chat_id, teams_message_id, int(time.time())),
         )
+
+
+def seed_chat_threads(jid_mappings: dict[str, str]) -> None:
+    """Insere mapeamentos teams_chat_id→wa_jid vindos do config, sem sobrescrever entradas reais."""
+    for teams_chat_id, wa_jid in jid_mappings.items():
+        if not wa_jid:
+            continue
+        with _conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO chat_threads (chat_id, teams_chat_id, teams_message_id, last_message_at)
+                VALUES (?, ?, 'seed', 0)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    teams_chat_id = excluded.teams_chat_id
+                WHERE teams_chat_id IS NULL OR teams_chat_id = ''
+                """,
+                (wa_jid, teams_chat_id),
+            )
+        print(f"[DB] Seed: {wa_jid[:30]} → {teams_chat_id[:40]}")
 
 
 def find_wa_jid_by_teams_chat(teams_chat_id: str) -> str | None:

@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     teams_notification_secret: str = "defaultsecret123"
     # Formato: "19:chatid1@thread.v2=Nome Grupo WA;19:chatid2@thread.v2=Outro Grupo"
     teams_chat_mappings: str = ""
+    # Formato: "19:chatid1@thread.v2=120363@g.us;19:chatid2@thread.v2=120364@g.us"
+    teams_wa_jids: str = ""
     teams_incoming_webhook_url: str = ""
     teams_reply_webhook_url: str = ""
 
@@ -46,6 +48,17 @@ class Settings(BaseSettings):
     def wa_to_teams(self) -> dict[str, str]:
         """Retorna {wa_group_name: teams_chat_id}"""
         return {v: k for k, v in self.chat_mappings.items()}
+
+    @property
+    def wa_jid_mappings(self) -> dict[str, str]:
+        """Retorna {teams_chat_id: wa_jid} para seed do banco."""
+        result: dict[str, str] = {}
+        for pair in self.teams_wa_jids.split(";"):
+            pair = pair.strip()
+            if "=" in pair:
+                chat_id, jid = pair.split("=", 1)
+                result[chat_id.strip()] = jid.strip()
+        return result
 
 
 settings = Settings()

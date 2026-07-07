@@ -10,6 +10,7 @@ from config import settings
 from storage.db import init_db, save_refresh_token, seed_chat_threads
 from teams.subscription import setup_subscription
 import whatsapp.handler as wa_handler
+import whatsapp.api as wa_api
 import teams.handler as teams_handler
 
 
@@ -90,6 +91,15 @@ async def auth_setup():
 async def health():
     from datetime import datetime
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
+
+@app.get("/temp-media/{token}")
+async def temp_media(token: str):
+    result = wa_api.pop_temp_image(token)
+    if result is None:
+        return Response(status_code=404)
+    image_bytes, mimetype = result
+    return Response(content=image_bytes, media_type=mimetype)
 
 
 @app.get("/webhook/whatsapp")

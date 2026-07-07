@@ -23,73 +23,78 @@ async def send_image(chat_id: str, image_bytes: bytes, mimetype: str, caption: s
     import base64 as _b64
     ext = mimetype.split("/")[-1].split("+")[0] if "/" in mimetype else "jpg"
     filename = f"image.{ext}"
-    headers_token = {"token": settings.uazapi_token}
     errors = []
 
     async with httpx.AsyncClient(timeout=30) as client:
-        # Tentativa 1: JSON com campo "file" base64 + "text" (Uazapi exige text mesmo para mídia)
+        # Tentativa 1: multipart construído manualmente (controle total do encoding)
+        try:
+            boundary = "----FormBoundary7MA4YWxkTrZu0gW"
+            body = (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="number"\r\n\r\n'
+                f"{chat_id}\r\n"
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="caption"\r\n\r\n'
+                f"{caption or ''}\r\n"
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+                f"Content-Type: {mimetype}\r\n\r\n"
+            ).encode("utf-8") + image_bytes + f"\r\n--{boundary}--\r\n".encode("utf-8")
+            resp = await client.post(
+                f"{settings.uazapi_base}/send/media",
+                headers={
+                    "token": settings.uazapi_token,
+                    "Content-Type": f"multipart/form-data; boundary={boundary}",
+                },
+                content=body,
+            )
+            if resp.is_success:
+                print("[WA API] send_image OK (multipart manual)")
+                return resp.json() if resp.content else {}
+            errors.append(f"manual-mp: {resp.status_code} {resp.text[:120]}")
+        except Exception as e:
+            errors.append(f"manual-mp: {e}")
+
+        # Tentativa 2: JSON com base64 + caption + filename
         try:
             resp = await client.post(
                 f"{settings.uazapi_base}/send/media",
                 headers=_headers(),
                 json={
                     "number": chat_id,
+                    "caption": caption or "",
                     "text": caption or "",
                     "file": _b64.b64encode(image_bytes).decode(),
+                    "mimetype": mimetype,
+                    "filename": filename,
+                },
+            )
+            if resp.is_success:
+                print("[WA API] send_image OK (JSON file+caption+filename)")
+                return resp.json() if resp.content else {}
+            errors.append(f"json+caption: {resp.status_code} {resp.text[:120]}")
+        except Exception as e:
+            errors.append(f"json+caption: {e}")
+
+        # Tentativa 3: JSON com base64 como data URL
+        try:
+            data_url = f"data:{mimetype};base64,{_b64.b64encode(image_bytes).decode()}"
+            resp = await client.post(
+                f"{settings.uazapi_base}/send/media",
+                headers=_headers(),
+                json={
+                    "number": chat_id,
+                    "text": caption or "",
+                    "file": data_url,
                     "mimetype": mimetype,
                 },
             )
             if resp.is_success:
-                print("[WA API] send_image OK (JSON file+text)")
+                print("[WA API] send_image OK (JSON data URL)")
                 return resp.json() if resp.content else {}
-            errors.append(f"json+text: {resp.status_code} {resp.text[:120]}")
+            errors.append(f"json+dataurl: {resp.status_code} {resp.text[:120]}")
         except Exception as e:
-            errors.append(f"json+text: {e}")
-
-        # Tentativa 2: número no path da URL + arquivo em multipart
-        try:
-            resp = await client.post(
-                f"{settings.uazapi_base}/send/media/{chat_id}",
-                headers=headers_token,
-                data={"caption": caption or ""},
-                files={"file": (filename, image_bytes, mimetype)},
-            )
-            if resp.is_success:
-                print("[WA API] send_image OK (path/number + multipart)")
-                return resp.json() if resp.content else {}
-            errors.append(f"path+multipart: {resp.status_code} {resp.text[:120]}")
-        except Exception as e:
-            errors.append(f"path+multipart: {e}")
-
-        # Tentativa 3: número como query param + arquivo em multipart
-        try:
-            resp = await client.post(
-                f"{settings.uazapi_base}/send/media",
-                headers=headers_token,
-                params={"number": chat_id, "caption": caption or ""},
-                files={"file": (filename, image_bytes, mimetype)},
-            )
-            if resp.is_success:
-                print("[WA API] send_image OK (query param + multipart)")
-                return resp.json() if resp.content else {}
-            errors.append(f"query+multipart: {resp.status_code} {resp.text[:120]}")
-        except Exception as e:
-            errors.append(f"query+multipart: {e}")
-
-        # Tentativa 4: data= dict + files= (padrão httpx multipart misto)
-        try:
-            resp = await client.post(
-                f"{settings.uazapi_base}/send/media",
-                headers=headers_token,
-                data={"number": chat_id, "caption": caption or ""},
-                files={"file": (filename, image_bytes, mimetype)},
-            )
-            if resp.is_success:
-                print("[WA API] send_image OK (data dict + files)")
-                return resp.json() if resp.content else {}
-            errors.append(f"data+files: {resp.status_code} {resp.text[:120]}")
-        except Exception as e:
-            errors.append(f"data+files: {e}")
+            errors.append(f"json+dataurl: {e}")
 
     raise Exception(f"send_image falhou: {errors}")
 

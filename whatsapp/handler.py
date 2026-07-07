@@ -38,6 +38,37 @@ def _uazapi_media(msg: dict) -> tuple[str, str, str, str]:
     if not isinstance(media_url, str):
         media_url = ""
     mimetype = (msg.get("mimetype") or msg.get("mimeType") or "").lower()
+    caption = msg.get("caption") or ""
+
+    # Uazapi pode colocar dados da mídia dentro de "content" (dict)
+    content = msg.get("content")
+    if not media_url and isinstance(content, dict):
+        # Tenta URL diretamente no content
+        media_url = content.get("url") or content.get("mediaUrl") or content.get("directPath") or ""
+        if not isinstance(media_url, str):
+            media_url = ""
+        if not mimetype:
+            mimetype = (content.get("mimetype") or content.get("mimeType") or "").lower()
+        if not caption:
+            caption = content.get("caption") or ""
+        # Tenta sub-chaves imageMessage/videoMessage etc. dentro de content
+        if not media_url:
+            for key in ("imageMessage", "videoMessage", "audioMessage", "documentMessage", "stickerMessage"):
+                inner = content.get(key)
+                if isinstance(inner, dict):
+                    inner_url = inner.get("url") or inner.get("directPath") or ""
+                    if isinstance(inner_url, str) and inner_url:
+                        media_url = inner_url
+                        if not msg_type:
+                            msg_type = key.lower()
+                        if not mimetype:
+                            mimetype = (inner.get("mimetype") or "").lower()
+                        if not caption:
+                            caption = inner.get("caption") or ""
+                        break
+
+    if not isinstance(media_url, str):
+        media_url = ""
     if not mimetype:
         if "image" in msg_type:
             mimetype = "image/jpeg"
@@ -45,7 +76,6 @@ def _uazapi_media(msg: dict) -> tuple[str, str, str, str]:
             mimetype = "video/mp4"
         elif "document" in msg_type:
             mimetype = "application/octet-stream"
-    caption = msg.get("caption") or ""
     if not isinstance(caption, str):
         caption = ""
     return msg_type, media_url, mimetype, caption
@@ -130,8 +160,8 @@ async def handle_incoming(payload: dict) -> None:
                         msg_type = "audiomessage"
                     if media_url:
                         print(f"[WA handler] URL de mídia encontrada no msg.message: {media_url[:80]}")
-        if not media_url and not (msg.get("content") or msg.get("text") or msg.get("body") or msg.get("conversation")):
-            print(f"[WA handler] msg keys: {list(msg.keys())} | msg sample: {str(msg)[:400]}")
+        if not media_url:
+            print(f"[WA handler] DEBUG mídia não encontrada | msg_type={msg_type!r} | keys={list(msg.keys())} | sample={str(msg)[:500]}")
         text = _extract_text_uazapi(msg)
 
     else:

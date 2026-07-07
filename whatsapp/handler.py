@@ -104,16 +104,28 @@ def _media_label(msg_type: str, caption: str, msg: dict) -> str:
     return f"[{msg_type or 'Mídia'}]{cap}"
 
 
-async def _download_image(media_url: str, message_id: str, chat_id: str, is_uazapi: bool) -> bytes:
-    """Tenta baixar a imagem: primeiro URL direta, depois API Uazapi por ID."""
+async def _download_image(
+    media_url: str, message_id: str, chat_id: str, is_uazapi: bool, thumbnail_b64: str = ""
+) -> bytes:
+    """Obtém bytes da imagem: thumbnail do payload → URL direta → API Uazapi."""
+    import base64
+    # Thumbnail já vem no payload do Uazapi como JPEG válido (sem criptografia)
+    if thumbnail_b64:
+        print("[WA handler] Usando thumbnail JPEG do payload Uazapi")
+        return base64.b64decode(thumbnail_b64)
+    # URL direta (funciona em algumas configurações)
     if media_url and media_url.startswith("http"):
         try:
             return await wa_api.download_media(media_url)
         except Exception as e:
             print(f"[WA handler] Download direto falhou ({e}), tentando via Uazapi API...")
+    # API Uazapi por ID
     if is_uazapi and message_id:
-        return await wa_api.download_media_by_id(message_id, chat_id)
-    raise Exception(f"Sem URL válida e sem message_id para download (url={media_url!r})")
+        try:
+            return await wa_api.download_media_by_id(message_id, chat_id)
+        except Exception as e:
+            print(f"[WA handler] Download por ID falhou ({e})")
+    raise Exception(f"Sem imagem disponível (url={media_url!r})")
 
 
 async def handle_incoming(payload: dict) -> None:
@@ -124,6 +136,7 @@ async def handle_incoming(payload: dict) -> None:
     media_url = ""
     mimetype = ""
     caption = ""
+    thumbnail_b64 = ""
 
     if msg and isinstance(msg, dict) and "chatid" in msg:
         # Uazapi flat format
@@ -144,8 +157,16 @@ async def handle_incoming(payload: dict) -> None:
         )
 
         msg_type, media_url, mimetype, caption = _uazapi_media(msg)
-        if "image" in msg_type or "video" in msg_type or "audio" in msg_type or "document" in msg_type:
-            print(f"[WA handler] MÍDIA detectada | type={msg_type!r} | url={media_url!r} | msg={str(msg)[:1000]}")
+        # Extrai thumbnail e corrige URL maiúscula do content (Uazapi usa "URL" não "url")
+        _content = msg.get("content")
+        if isinstance(_content, dict):
+            thumbnail_b64 = _content.get("JPEGThumbnail") or ""
+            if not mimetype:
+                mimetype = (_content.get("mimetype") or "").lower()
+            if not media_url:
+                cand = _content.get("URL") or _content.get("url") or ""
+                if isinstance(cand, str) and cand.startswith("http"):
+                    media_url = cand
         # Fallback 1: Uazapi pode colocar URL no root do payload
         if not media_url:
             _, media_url_root, mimetype_root, caption_root = _uazapi_media(payload)
@@ -234,7 +255,7 @@ async def handle_incoming(payload: dict) -> None:
             )
             print("[WA→Teams] ✓ Texto enviado ao chat")
             try:
-                image_bytes = await _download_image(media_url, message_id, chat_id, is_uazapi_msg)
+                image_bytes = await _download_image(media_url, message_id, chat_id, is_uazapi_msg, thumbnail_b64)
                 if len(image_bytes) > 4 * 1024 * 1024:
                     raise Exception("imagem maior que 4 MB")
                 await teams_api.post_image_only(teams_chat_id, image_bytes, mimetype or "image/jpeg")
@@ -245,7 +266,7 @@ async def handle_incoming(payload: dict) -> None:
         elif is_image:
             # Só imagem (sem texto): posta com cabeçalho de remetente e ref [wa:]
             try:
-                image_bytes = await _download_image(media_url, message_id, chat_id, is_uazapi_msg)
+                image_bytes = await _download_image(media_url, message_id, chat_id, is_uazapi_msg, thumbnail_b64)
                 if len(image_bytes) > 4 * 1024 * 1024:
                     raise Exception("imagem maior que 4 MB")
                 await teams_api.post_image_to_chat(

@@ -1,26 +1,6 @@
 # Compatível com Uazapi v2. Se usar outra versão, ajuste os endpoints abaixo.
-import asyncio
 import httpx
 from config import settings
-
-# Armazenamento temporário de imagens para servir ao Uazapi via URL
-_temp_images: dict[str, tuple[bytes, str]] = {}
-
-
-def store_temp_image(image_bytes: bytes, mimetype: str) -> str:
-    import uuid
-    token = str(uuid.uuid4()).replace("-", "")
-    _temp_images[token] = (image_bytes, mimetype)
-    return token
-
-
-def pop_temp_image(token: str) -> tuple[bytes, str] | None:
-    return _temp_images.pop(token, None)
-
-
-async def _cleanup_temp_image(token: str) -> None:
-    await asyncio.sleep(60)
-    _temp_images.pop(token, None)
 
 
 def _headers() -> dict:
@@ -39,56 +19,23 @@ async def send_text(chat_id: str, text: str) -> dict:
 
 
 async def send_image(chat_id: str, image_bytes: bytes, mimetype: str, caption: str = "") -> dict:
-    """Envia imagem via Uazapi usando URL temporária hospedada no próprio servidor."""
-    token = store_temp_image(image_bytes, mimetype)
-    image_url = f"{settings.webhook_base}/temp-media/{token}"
-    asyncio.create_task(_cleanup_temp_image(token))
-    errors = []
-
+    """Envia imagem via Uazapi /send/media com type=image e arquivo em base64."""
+    import base64 as _b64
     async with httpx.AsyncClient(timeout=30) as client:
-        # Tentativa 1: campo "url" (formato mais comum no Uazapi v2)
-        try:
-            resp = await client.post(
-                f"{settings.uazapi_base}/send/media",
-                headers=_headers(),
-                json={"number": chat_id, "url": image_url, "mimetype": mimetype, "caption": caption or ""},
-            )
-            if resp.is_success:
-                print(f"[WA API] send_image OK (url field) → {image_url}")
-                return resp.json() if resp.content else {}
-            errors.append(f"url: {resp.status_code} {resp.text[:120]}")
-        except Exception as e:
-            errors.append(f"url: {e}")
-
-        # Tentativa 2: campo "mediaUrl"
-        try:
-            resp = await client.post(
-                f"{settings.uazapi_base}/send/media",
-                headers=_headers(),
-                json={"number": chat_id, "mediaUrl": image_url, "mimetype": mimetype, "caption": caption or ""},
-            )
-            if resp.is_success:
-                print(f"[WA API] send_image OK (mediaUrl field)")
-                return resp.json() if resp.content else {}
-            errors.append(f"mediaUrl: {resp.status_code} {resp.text[:120]}")
-        except Exception as e:
-            errors.append(f"mediaUrl: {e}")
-
-        # Tentativa 3: campo "file" com a URL (fallback)
-        try:
-            resp = await client.post(
-                f"{settings.uazapi_base}/send/media",
-                headers=_headers(),
-                json={"number": chat_id, "file": image_url, "text": caption or "", "mimetype": mimetype},
-            )
-            if resp.is_success:
-                print(f"[WA API] send_image OK (file=url)")
-                return resp.json() if resp.content else {}
-            errors.append(f"file=url: {resp.status_code} {resp.text[:120]}")
-        except Exception as e:
-            errors.append(f"file=url: {e}")
-
-    raise Exception(f"send_image falhou: {errors}")
+        resp = await client.post(
+            f"{settings.uazapi_base}/send/media",
+            headers=_headers(),
+            json={
+                "number": chat_id,
+                "type": "image",
+                "file": _b64.b64encode(image_bytes).decode(),
+                "text": caption or "",
+            },
+        )
+        if not resp.is_success:
+            raise Exception(f"send/media {resp.status_code}: {resp.text[:200]}")
+        print("[WA API] send_image OK")
+        return resp.json() if resp.content else {}
 
 
 async def send_reply(chat_id: str, quoted_msg_id: str, text: str) -> dict:

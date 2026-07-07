@@ -19,44 +19,80 @@ async def send_text(chat_id: str, text: str) -> dict:
 
 
 async def send_image(chat_id: str, image_bytes: bytes, mimetype: str, caption: str = "") -> dict:
-    """Envia imagem via Uazapi: metadados como query params, arquivo como multipart."""
+    """Envia imagem via Uazapi: tenta múltiplos formatos até um funcionar."""
     ext = mimetype.split("/")[-1].split("+")[0] if "/" in mimetype else "jpg"
     filename = f"image.{ext}"
     headers = {"token": settings.uazapi_token}
     errors = []
+    # Formato sem sufixo @domain (alguns endpoints esperam só o número)
+    phone = chat_id.split("@")[0] if "@" in chat_id else chat_id
+
     async with httpx.AsyncClient(timeout=30) as client:
-        # Tentativa 1: number/caption como query params + arquivo em multipart
+        # Tentativa 1: data= dict (campos de formulário) + files= separados (padrão httpx multipart)
         try:
             resp = await client.post(
                 f"{settings.uazapi_base}/send/media",
                 headers=headers,
-                params={"number": chat_id, "caption": caption or ""},
+                data={"number": chat_id, "caption": caption or ""},
                 files={"file": (filename, image_bytes, mimetype)},
             )
             if resp.is_success:
-                print("[WA API] send_image OK (query params + multipart)")
+                print("[WA API] send_image OK (data dict + files)")
                 return resp.json() if resp.content else {}
-            errors.append(f"query+multipart: {resp.status_code} {resp.text[:120]}")
+            errors.append(f"data+files: {resp.status_code} {resp.text[:120]}")
         except Exception as e:
-            errors.append(f"query+multipart: {e}")
+            errors.append(f"data+files: {e}")
 
-        # Tentativa 2: chatId em vez de number (campo alternativo)
+        # Tentativa 2: número sem @domain via data=
+        try:
+            resp = await client.post(
+                f"{settings.uazapi_base}/send/media",
+                headers=headers,
+                data={"number": phone, "caption": caption or ""},
+                files={"file": (filename, image_bytes, mimetype)},
+            )
+            if resp.is_success:
+                print("[WA API] send_image OK (phone sem @domain)")
+                return resp.json() if resp.content else {}
+            errors.append(f"phone: {resp.status_code} {resp.text[:120]}")
+        except Exception as e:
+            errors.append(f"phone: {e}")
+
+        # Tentativa 3: campo number dentro de lista de tuplas (multipart puro)
         try:
             resp = await client.post(
                 f"{settings.uazapi_base}/send/media",
                 headers=headers,
                 files=[
-                    ("chatId",  (None, chat_id)),
+                    ("number",  (None, chat_id)),
                     ("caption", (None, caption or "")),
                     ("file",    (filename, image_bytes, mimetype)),
                 ],
             )
             if resp.is_success:
-                print("[WA API] send_image OK (chatId multipart)")
+                print("[WA API] send_image OK (number em tuples)")
                 return resp.json() if resp.content else {}
-            errors.append(f"chatId multipart: {resp.status_code} {resp.text[:120]}")
+            errors.append(f"tuples+number: {resp.status_code} {resp.text[:120]}")
         except Exception as e:
-            errors.append(f"chatId multipart: {e}")
+            errors.append(f"tuples+number: {e}")
+
+        # Tentativa 4: número sem @domain em lista de tuplas
+        try:
+            resp = await client.post(
+                f"{settings.uazapi_base}/send/media",
+                headers=headers,
+                files=[
+                    ("number",  (None, phone)),
+                    ("caption", (None, caption or "")),
+                    ("file",    (filename, image_bytes, mimetype)),
+                ],
+            )
+            if resp.is_success:
+                print("[WA API] send_image OK (phone sem @domain em tuples)")
+                return resp.json() if resp.content else {}
+            errors.append(f"tuples+phone: {resp.status_code} {resp.text[:120]}")
+        except Exception as e:
+            errors.append(f"tuples+phone: {e}")
 
     raise Exception(f"send_image falhou: {errors}")
 

@@ -341,10 +341,12 @@ async def handle_incoming(payload: dict) -> None:
 
         elif is_audio:
             try:
+                print(f"[WA→Teams] Baixando áudio (url={media_url[:60] if media_url else 'vazio'}, key={'sim' if media_key_b64 else 'não'})")
                 audio_bytes = await _download_image(
                     media_url, message_id, chat_id, is_uazapi_msg,
                     "", media_key_b64, msg_type
                 )
+                print(f"[WA→Teams] Áudio baixado: {len(audio_bytes)} bytes ({mimetype or 'audio/ogg'})")
                 await teams_api.post_audio_to_chat(
                     teams_chat_id,
                     sender_name=sender_name,

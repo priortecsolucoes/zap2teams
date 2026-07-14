@@ -173,10 +173,9 @@ async def post_audio_to_chat(
     wa_message_id: str,
     caption: str = "",
 ) -> None:
-    """Envia áudio como arquivo anexo no Teams via SharePoint do chat."""
+    """Envia áudio como arquivo anexo no Teams via OneDrive do usuário autenticado."""
     import re
-    app_token = await _get_access_token()
-    delegated_token = await _get_delegated_token()
+    token = await _get_delegated_token()
     safe_sender = sender_name.replace("|", "").replace("[", "").replace("]", "")
     ref = f"[wa:{wa_chat_id}|{wa_message_id}|{safe_sender}]"
 
@@ -189,30 +188,31 @@ async def post_audio_to_chat(
     filename = f"audio_{safe_id}.{ext}"
 
     async with httpx.AsyncClient(timeout=60) as client:
-        # 1. Obtém a pasta de arquivos do chat no SharePoint
-        resp = await client.get(
-            f"https://graph.microsoft.com/v1.0/chats/{chat_id}/filesFolder",
-            headers={"Authorization": f"Bearer {app_token}"},
-        )
-        if not resp.is_success:
-            raise Exception(f"filesFolder {resp.status_code}: {resp.text[:300]}")
-        folder = resp.json()
-        drive_id = folder["parentReference"]["driveId"]
-        folder_id = folder["id"]
-
-        # 2. Faz upload do arquivo de áudio
+        # 1. Faz upload para a pasta "WhatsApp-Audios" no OneDrive do usuário
         resp = await client.put(
-            f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{folder_id}:/{filename}:/content",
-            headers={"Authorization": f"Bearer {app_token}", "Content-Type": mimetype or "audio/ogg"},
+            f"https://graph.microsoft.com/v1.0/me/drive/root:/WhatsApp-Audios/{filename}:/content",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": mimetype or "audio/ogg"},
             content=audio_bytes,
         )
         if not resp.is_success:
             raise Exception(f"audio upload {resp.status_code}: {resp.text[:300]}")
         item = resp.json()
+        drive_id = item["parentReference"]["driveId"]
         item_id = item["id"]
         web_url = item.get("webUrl", "")
+        print(f"[Teams] Áudio carregado no OneDrive: {filename}")
 
-        # 3. Posta mensagem no chat com o arquivo como anexo
+        # 2. Cria link de compartilhamento para toda a organização poder acessar
+        link_resp = await client.post(
+            f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/createLink",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"type": "view", "scope": "organization"},
+        )
+        share_url = web_url
+        if link_resp.is_success:
+            share_url = link_resp.json().get("link", {}).get("webUrl", web_url)
+
+        # 3. Posta mensagem no chat com o arquivo como anexo referenciado
         caption_html = f"<p>{_esc(caption)}</p>" if caption else ""
         content = (
             f"<p>📱 <strong>{_esc(sender_name)}</strong> &nbsp;·&nbsp; {_esc(chat_name)}</p>"
@@ -223,13 +223,13 @@ async def post_audio_to_chat(
         )
         resp = await client.post(
             f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages",
-            headers={"Authorization": f"Bearer {delegated_token}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json={
                 "body": {"contentType": "html", "content": content},
                 "attachments": [{
                     "id": item_id,
                     "contentType": "reference",
-                    "contentUrl": web_url,
+                    "contentUrl": share_url,
                     "name": f"Áudio WhatsApp.{ext}",
                 }],
             },

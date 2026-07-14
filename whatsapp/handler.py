@@ -272,8 +272,9 @@ async def handle_incoming(payload: dict) -> None:
         text = _extract_text(data.get("message"))
 
     is_image = "image" in msg_type
+    is_audio = "audio" in msg_type
 
-    if not text and not media_url and not is_image:
+    if not text and not media_url and not is_image and not is_audio:
         print("[WA handler] sem texto nem mídia extraível")
         return
 
@@ -328,6 +329,35 @@ async def handle_incoming(payload: dict) -> None:
                 print("[WA→Teams] ✓ Imagem enviada ao chat")
             except Exception as img_err:
                 print(f"[WA→Teams] Falha ao enviar imagem ({img_err}), enviando como texto")
+                await teams_api.post_to_chat(
+                    teams_chat_id,
+                    sender_name=sender_name,
+                    chat_name=group_name,
+                    text=_media_label(msg_type, caption, media_ctx),
+                    wa_chat_id=chat_id,
+                    wa_message_id=message_id,
+                )
+                print("[WA→Teams] ✓ Texto (fallback) enviado ao chat")
+
+        elif is_audio:
+            try:
+                audio_bytes = await _download_image(
+                    media_url, message_id, chat_id, is_uazapi_msg,
+                    "", media_key_b64, msg_type
+                )
+                await teams_api.post_audio_to_chat(
+                    teams_chat_id,
+                    sender_name=sender_name,
+                    chat_name=group_name,
+                    audio_bytes=audio_bytes,
+                    mimetype=mimetype or "audio/ogg",
+                    wa_chat_id=chat_id,
+                    wa_message_id=message_id,
+                    caption=caption,
+                )
+                print("[WA→Teams] ✓ Áudio enviado ao chat")
+            except Exception as audio_err:
+                print(f"[WA→Teams] Falha ao enviar áudio ({audio_err}), enviando como texto")
                 await teams_api.post_to_chat(
                     teams_chat_id,
                     sender_name=sender_name,

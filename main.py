@@ -69,7 +69,7 @@ async def auth_setup():
             f"https://login.microsoftonline.com/{settings.teams_tenant_id}/oauth2/v2.0/devicecode",
             data={
                 "client_id": settings.teams_client_id,
-                "scope": "offline_access ChatMessage.Send",
+                "scope": "offline_access ChatMessage.Send Files.ReadWrite",
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )

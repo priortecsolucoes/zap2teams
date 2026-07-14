@@ -52,7 +52,7 @@ async def _get_delegated_token() -> str:
                     "grant_type": "refresh_token",
                     "client_id": settings.teams_client_id,
                     "refresh_token": refresh_token,
-                    "scope": "offline_access ChatMessage.Send",
+                    "scope": "offline_access ChatMessage.Send Files.ReadWrite",
                 },
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
@@ -161,6 +161,81 @@ async def post_image_only(chat_id: str, image_bytes: bytes, content_type: str) -
         )
         if not resp.is_success:
             raise Exception(f"Chat image post {resp.status_code}: {resp.text}")
+
+
+async def post_audio_to_chat(
+    chat_id: str,
+    sender_name: str,
+    chat_name: str,
+    audio_bytes: bytes,
+    mimetype: str,
+    wa_chat_id: str,
+    wa_message_id: str,
+    caption: str = "",
+) -> None:
+    """Envia áudio como arquivo anexo no Teams via SharePoint do chat."""
+    import re
+    app_token = await _get_access_token()
+    delegated_token = await _get_delegated_token()
+    safe_sender = sender_name.replace("|", "").replace("[", "").replace("]", "")
+    ref = f"[wa:{wa_chat_id}|{wa_message_id}|{safe_sender}]"
+
+    ext_map = {
+        "audio/ogg": "ogg", "audio/mpeg": "mp3", "audio/wav": "wav",
+        "audio/m4a": "m4a", "audio/aac": "aac", "audio/mp4": "m4a",
+    }
+    ext = ext_map.get(mimetype.split(";")[0].strip(), "ogg")
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", wa_message_id)[:20]
+    filename = f"audio_{safe_id}.{ext}"
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        # 1. Obtém a pasta de arquivos do chat no SharePoint
+        resp = await client.get(
+            f"https://graph.microsoft.com/v1.0/chats/{chat_id}/filesFolder",
+            headers={"Authorization": f"Bearer {app_token}"},
+        )
+        if not resp.is_success:
+            raise Exception(f"filesFolder {resp.status_code}: {resp.text[:300]}")
+        folder = resp.json()
+        drive_id = folder["parentReference"]["driveId"]
+        folder_id = folder["id"]
+
+        # 2. Faz upload do arquivo de áudio
+        resp = await client.put(
+            f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{folder_id}:/{filename}:/content",
+            headers={"Authorization": f"Bearer {app_token}", "Content-Type": mimetype or "audio/ogg"},
+            content=audio_bytes,
+        )
+        if not resp.is_success:
+            raise Exception(f"audio upload {resp.status_code}: {resp.text[:300]}")
+        item = resp.json()
+        item_id = item["id"]
+        web_url = item.get("webUrl", "")
+
+        # 3. Posta mensagem no chat com o arquivo como anexo
+        caption_html = f"<p>{_esc(caption)}</p>" if caption else ""
+        content = (
+            f"<p>📱 <strong>{_esc(sender_name)}</strong> &nbsp;·&nbsp; {_esc(chat_name)}</p>"
+            f"<p>🎵 Áudio WhatsApp</p>"
+            f"{caption_html}"
+            f'<attachment id="{item_id}"></attachment>'
+            f"<p><em><span style='font-size:11px;color:gray'>{ref}</span></em></p>"
+        )
+        resp = await client.post(
+            f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages",
+            headers={"Authorization": f"Bearer {delegated_token}", "Content-Type": "application/json"},
+            json={
+                "body": {"contentType": "html", "content": content},
+                "attachments": [{
+                    "id": item_id,
+                    "contentType": "reference",
+                    "contentUrl": web_url,
+                    "name": f"Áudio WhatsApp.{ext}",
+                }],
+            },
+        )
+        if not resp.is_success:
+            raise Exception(f"audio message post {resp.status_code}: {resp.text[:300]}")
 
 
 async def post_to_chat(

@@ -182,6 +182,7 @@ async def handle_incoming(payload: dict) -> None:
     caption = ""
     thumbnail_b64 = ""
     media_key_b64 = ""
+    doc_filename = ""
 
     if msg and isinstance(msg, dict) and "chatid" in msg:
         # Uazapi flat format
@@ -243,6 +244,17 @@ async def handle_incoming(payload: dict) -> None:
                             caption = caption or (sub.get("caption") or "")
                             print(f"[WA handler] URL de mídia encontrada no msg.message.{_key}: {media_url[:80]}")
                         break
+        # Extrai nome do arquivo para documentos
+        if "document" in (msg_type or ""):
+            doc_filename = msg.get("filename") or msg.get("fileName") or ""
+            if not doc_filename and isinstance(_content, dict):
+                doc_filename = (
+                    _content.get("filename") or _content.get("fileName") or
+                    (_content.get("documentMessage") or {}).get("fileName") or
+                    (_content.get("documentMessage") or {}).get("filename") or
+                    ""
+                )
+            doc_filename = doc_filename or ""
         text = _extract_text_uazapi(msg)
 
     else:
@@ -273,8 +285,9 @@ async def handle_incoming(payload: dict) -> None:
 
     is_image = "image" in msg_type
     is_audio = "audio" in msg_type
+    is_document = "document" in msg_type and not is_image and not is_audio
 
-    if not text and not media_url and not is_image and not is_audio:
+    if not text and not media_url and not is_image and not is_audio and not is_document:
         print("[WA handler] sem texto nem mídia extraível")
         return
 
@@ -360,6 +373,38 @@ async def handle_incoming(payload: dict) -> None:
                 print("[WA→Teams] ✓ Áudio enviado ao chat")
             except Exception as audio_err:
                 print(f"[WA→Teams] Falha ao enviar áudio ({audio_err}), enviando como texto")
+                await teams_api.post_to_chat(
+                    teams_chat_id,
+                    sender_name=sender_name,
+                    chat_name=group_name,
+                    text=_media_label(msg_type, caption, media_ctx),
+                    wa_chat_id=chat_id,
+                    wa_message_id=message_id,
+                )
+                print("[WA→Teams] ✓ Texto (fallback) enviado ao chat")
+
+        elif is_document:
+            try:
+                print(f"[WA→Teams] Baixando documento (url={media_url[:60] if media_url else 'vazio'}, filename={doc_filename!r})")
+                doc_bytes = await _download_image(
+                    media_url, message_id, chat_id, is_uazapi_msg,
+                    "", media_key_b64, msg_type
+                )
+                print(f"[WA→Teams] Documento baixado: {len(doc_bytes)} bytes ({mimetype or 'application/octet-stream'})")
+                await teams_api.post_document_to_chat(
+                    teams_chat_id,
+                    sender_name=sender_name,
+                    chat_name=group_name,
+                    doc_bytes=doc_bytes,
+                    mimetype=mimetype or "application/octet-stream",
+                    filename=doc_filename or "documento",
+                    wa_chat_id=chat_id,
+                    wa_message_id=message_id,
+                    caption=caption,
+                )
+                print("[WA→Teams] ✓ Documento enviado ao chat")
+            except Exception as doc_err:
+                print(f"[WA→Teams] Falha ao enviar documento ({doc_err}), enviando como texto")
                 await teams_api.post_to_chat(
                     teams_chat_id,
                     sender_name=sender_name,

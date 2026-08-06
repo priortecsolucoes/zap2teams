@@ -304,6 +304,78 @@ async def post_document_to_chat(
             raise Exception(f"doc message post {resp.status_code}: {resp.text[:300]}")
 
 
+async def post_video_to_chat(
+    chat_id: str,
+    sender_name: str,
+    chat_name: str,
+    video_bytes: bytes,
+    mimetype: str,
+    wa_chat_id: str,
+    wa_message_id: str,
+    caption: str = "",
+) -> None:
+    """Envia vídeo como arquivo anexo no Teams via OneDrive do usuário autenticado."""
+    import re
+    token = await _get_delegated_token()
+    safe_sender = sender_name.replace("|", "").replace("[", "").replace("]", "")
+    ref = f"[wa:{wa_chat_id}|{wa_message_id}|{safe_sender}]"
+
+    ext_map = {
+        "video/mp4": "mp4", "video/quicktime": "mov", "video/3gpp": "3gp",
+        "video/webm": "webm", "video/x-matroska": "mkv",
+    }
+    ext = ext_map.get(mimetype.split(";")[0].strip(), "mp4")
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", wa_message_id)[:20]
+    filename = f"video_{safe_id}.{ext}"
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.put(
+            f"https://graph.microsoft.com/v1.0/me/drive/root:/WhatsApp-Videos/{filename}:/content",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": mimetype or "video/mp4"},
+            content=video_bytes,
+        )
+        if not resp.is_success:
+            raise Exception(f"video upload {resp.status_code}: {resp.text[:300]}")
+        item = resp.json()
+        drive_id = item["parentReference"]["driveId"]
+        item_id = item["id"]
+        web_url = item.get("webUrl", "")
+        print(f"[Teams] Vídeo carregado no OneDrive: {filename}")
+
+        link_resp = await client.post(
+            f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/createLink",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"type": "view", "scope": "organization"},
+        )
+        share_url = web_url
+        if link_resp.is_success:
+            share_url = link_resp.json().get("link", {}).get("webUrl", web_url)
+
+        caption_html = f"<p>{_esc(caption)}</p>" if caption else ""
+        content = (
+            f"<p>📱 <strong>{_esc(sender_name)}</strong> &nbsp;·&nbsp; {_esc(chat_name)}</p>"
+            f"<p>🎥 Vídeo WhatsApp</p>"
+            f"{caption_html}"
+            f'<attachment id="{item_id}"></attachment>'
+            f"<p><em><span style='font-size:11px;color:gray'>{ref}</span></em></p>"
+        )
+        resp = await client.post(
+            f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={
+                "body": {"contentType": "html", "content": content},
+                "attachments": [{
+                    "id": item_id,
+                    "contentType": "reference",
+                    "contentUrl": share_url,
+                    "name": f"Vídeo WhatsApp.{ext}",
+                }],
+            },
+        )
+        if not resp.is_success:
+            raise Exception(f"video message post {resp.status_code}: {resp.text[:300]}")
+
+
 async def post_to_chat(
     chat_id: str,
     sender_name: str,

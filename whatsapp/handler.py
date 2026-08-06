@@ -285,9 +285,10 @@ async def handle_incoming(payload: dict) -> None:
 
     is_image = "image" in msg_type
     is_audio = "audio" in msg_type
-    is_document = "document" in msg_type and not is_image and not is_audio
+    is_video = "video" in msg_type
+    is_document = "document" in msg_type and not is_image and not is_audio and not is_video
 
-    if not text and not media_url and not is_image and not is_audio and not is_document:
+    if not text and not media_url and not is_image and not is_audio and not is_video and not is_document:
         print("[WA handler] sem texto nem mídia extraível")
         return
 
@@ -373,6 +374,37 @@ async def handle_incoming(payload: dict) -> None:
                 print("[WA→Teams] ✓ Áudio enviado ao chat")
             except Exception as audio_err:
                 print(f"[WA→Teams] Falha ao enviar áudio ({audio_err}), enviando como texto")
+                await teams_api.post_to_chat(
+                    teams_chat_id,
+                    sender_name=sender_name,
+                    chat_name=group_name,
+                    text=_media_label(msg_type, caption, media_ctx),
+                    wa_chat_id=chat_id,
+                    wa_message_id=message_id,
+                )
+                print("[WA→Teams] ✓ Texto (fallback) enviado ao chat")
+
+        elif is_video:
+            try:
+                print(f"[WA→Teams] Baixando vídeo (url={media_url[:60] if media_url else 'vazio'})")
+                video_bytes = await _download_image(
+                    media_url, message_id, chat_id, is_uazapi_msg,
+                    "", media_key_b64, msg_type
+                )
+                print(f"[WA→Teams] Vídeo baixado: {len(video_bytes)} bytes ({mimetype or 'video/mp4'})")
+                await teams_api.post_video_to_chat(
+                    teams_chat_id,
+                    sender_name=sender_name,
+                    chat_name=group_name,
+                    video_bytes=video_bytes,
+                    mimetype=mimetype or "video/mp4",
+                    wa_chat_id=chat_id,
+                    wa_message_id=message_id,
+                    caption=caption,
+                )
+                print("[WA→Teams] ✓ Vídeo enviado ao chat")
+            except Exception as video_err:
+                print(f"[WA→Teams] Falha ao enviar vídeo ({video_err}), enviando como texto")
                 await teams_api.post_to_chat(
                     teams_chat_id,
                     sender_name=sender_name,

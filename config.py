@@ -2,7 +2,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     port: int = 3000
     webhook_base_url: str
@@ -24,6 +24,30 @@ class Settings(BaseSettings):
     teams_wa_jids: str = ""
     teams_incoming_webhook_url: str = ""
     teams_reply_webhook_url: str = ""
+
+    # ─────────────────────────────────────────────
+    # Camada de IA (acolhimento automático no WhatsApp)
+    # ─────────────────────────────────────────────
+    ai_enabled: bool = True
+    # X: minutos de silêncio no grupo exigidos para uma msg de cliente abrir uma "janela de espera"
+    ai_inactivity_window_minutes: int = 30
+    # Y: minutos após a abertura da janela sem resposta nossa até a IA intervir
+    ai_response_timeout_minutes: int = 15
+    # Nome exibido em negrito antes da mensagem da IA
+    ai_assistant_name: str = "Assistente"
+    # Contexto de negócio injetado no prompt: quem é a empresa, produtos, tom de voz, regras etc.
+    ai_context: str = ""
+
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+
+    @property
+    def ai_inactivity_window_seconds(self) -> int:
+        return self.ai_inactivity_window_minutes * 60
+
+    @property
+    def ai_response_timeout_seconds(self) -> int:
+        return self.ai_response_timeout_minutes * 60
 
     @property
     def uazapi_base(self) -> str:

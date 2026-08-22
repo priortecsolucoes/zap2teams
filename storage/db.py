@@ -47,6 +47,29 @@ def init_db() -> None:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS ai_group_state (
+                wa_chat_id TEXT PRIMARY KEY,
+                last_activity_at INTEGER NOT NULL DEFAULT 0,
+                window_open INTEGER NOT NULL DEFAULT 0,
+                window_opened_at INTEGER,
+                window_customer_number TEXT,
+                window_customer_name TEXT,
+                window_notified INTEGER NOT NULL DEFAULT 0,
+                last_our_response_at INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_customer_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                wa_chat_id TEXT NOT NULL,
+                sender_number TEXT NOT NULL,
+                sender_name TEXT,
+                text TEXT,
+                created_at INTEGER NOT NULL DEFAULT (unixepoch())
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_ai_customer_messages_lookup
+                ON ai_customer_messages (wa_chat_id, sender_number, created_at);
         """)
         try:
             conn.execute("ALTER TABLE chat_threads ADD COLUMN teams_chat_id TEXT")
@@ -205,5 +228,132 @@ def update_thread_timestamp(chat_id: str) -> None:
             "UPDATE chat_threads SET last_message_at = ? WHERE chat_id = ?",
             (int(time.time()), chat_id),
         )
+
+
+# ─────────────────────────────────────────────
+# Camada de IA
+# ─────────────────────────────────────────────
+
+def _ensure_ai_state(conn: sqlite3.Connection, wa_chat_id: str) -> None:
+    conn.execute(
+        "INSERT INTO ai_group_state (wa_chat_id, last_activity_at) VALUES (?, 0) "
+        "ON CONFLICT(wa_chat_id) DO NOTHING",
+        (wa_chat_id,),
+    )
+
+
+def get_ai_state(wa_chat_id: str) -> dict | None:
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM ai_group_state WHERE wa_chat_id = ?", (wa_chat_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def touch_ai_activity(wa_chat_id: str, now: int) -> None:
+    with _conn() as conn:
+        _ensure_ai_state(conn, wa_chat_id)
+        conn.execute(
+            "UPDATE ai_group_state SET last_activity_at = ? WHERE wa_chat_id = ?",
+            (now, wa_chat_id),
+        )
+
+
+def open_ai_window(wa_chat_id: str, now: int, customer_number: str, customer_name: str) -> None:
+    with _conn() as conn:
+        _ensure_ai_state(conn, wa_chat_id)
+        conn.execute(
+            """
+            UPDATE ai_group_state SET
+                window_open = 1,
+                window_opened_at = ?,
+                window_customer_number = ?,
+                window_customer_name = ?,
+                window_notified = 0
+            WHERE wa_chat_id = ?
+            """,
+            (now, customer_number, customer_name, wa_chat_id),
+        )
+
+
+def mark_window_notified(wa_chat_id: str, now: int) -> None:
+    """Fecha a janela após a IA ter efetivamente enviado uma mensagem ao grupo."""
+    with _conn() as conn:
+        conn.execute(
+            """
+            UPDATE ai_group_state SET
+                window_open = 0,
+                window_notified = 1,
+                last_activity_at = ?
+            WHERE wa_chat_id = ?
+            """,
+            (now, wa_chat_id),
+        )
+
+
+def close_ai_window(wa_chat_id: str) -> None:
+    """Fecha a janela sem que a IA tenha enviado mensagem alguma (não altera last_activity_at,
+    pois nenhuma atividade real ocorreu no grupo)."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE ai_group_state SET window_open = 0, window_notified = 1 WHERE wa_chat_id = ?",
+            (wa_chat_id,),
+        )
+
+
+def mark_our_response(wa_chat_id: str, now: int) -> None:
+    with _conn() as conn:
+        _ensure_ai_state(conn, wa_chat_id)
+        conn.execute(
+            """
+            UPDATE ai_group_state SET
+                last_our_response_at = ?,
+                last_activity_at = ?,
+                window_open = 0,
+                window_notified = 0
+            WHERE wa_chat_id = ?
+            """,
+            (now, now, wa_chat_id),
+        )
+
+
+def log_ai_customer_message(wa_chat_id: str, sender_number: str, sender_name: str, text: str, now: int) -> None:
+    with _conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO ai_customer_messages (wa_chat_id, sender_number, sender_name, text, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (wa_chat_id, sender_number, sender_name, text, now),
+        )
+
+
+def get_ai_customer_messages_since(wa_chat_id: str, sender_number: str, since_ts: int) -> list[str]:
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT text FROM ai_customer_messages
+            WHERE wa_chat_id = ? AND sender_number = ? AND created_at >= ?
+            ORDER BY created_at ASC
+            """,
+            (wa_chat_id, sender_number, since_ts),
+        ).fetchall()
+        return [row["text"] for row in rows if row["text"]]
+
+
+def get_due_ai_windows(timeout_seconds: int) -> list[dict]:
+    now = int(time.time())
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM ai_group_state
+            WHERE window_open = 1
+              AND window_notified = 0
+              AND window_opened_at IS NOT NULL
+              AND (? - window_opened_at) >= ?
+            """,
+            (now, timeout_seconds),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
 

@@ -1,3 +1,4 @@
+import ai.watcher as ai_watcher
 import teams.api as teams_api
 import whatsapp.api as wa_api
 from config import settings
@@ -186,10 +187,11 @@ async def handle_incoming(payload: dict) -> None:
 
     if msg and isinstance(msg, dict) and "chatid" in msg:
         # Uazapi flat format
+        chat_id: str = msg.get("chatid", "")
         if msg.get("wasSentByApi"):
+            await ai_watcher.on_our_response(chat_id)
             return
 
-        chat_id: str = msg.get("chatid", "")
         message_id: str = msg.get("messageid") or msg.get("id", "")
         if not message_id:
             return
@@ -262,10 +264,11 @@ async def handle_incoming(payload: dict) -> None:
         data = payload.get("data") or payload
         key = data.get("key") or {}
 
+        chat_id = key.get("remoteJid", "")
         if key.get("fromMe"):
+            await ai_watcher.on_our_response(chat_id)
             return
 
-        chat_id = key.get("remoteJid", "")
         message_id = key.get("id", "")
         if not message_id:
             return
@@ -299,6 +302,14 @@ async def handle_incoming(payload: dict) -> None:
     if not teams_chat_id:
         print(f"[WA→Teams] Grupo '{group_name}' sem mapeamento Teams, ignorado")
         return
+
+    if is_group and settings.ai_enabled:
+        await ai_watcher.on_incoming_customer_message(
+            wa_chat_id=chat_id,
+            sender_number=sender_number,
+            sender_name=sender_name,
+            text=display,
+        )
 
     is_uazapi_msg = isinstance(msg, dict) and "chatid" in msg
     media_ctx = msg if is_uazapi_msg else {}

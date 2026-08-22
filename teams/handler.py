@@ -1,5 +1,6 @@
 import re
 
+import ai.watcher as ai_watcher
 import whatsapp.api as wa_api
 import teams.api as teams_api
 from config import settings
@@ -97,6 +98,7 @@ async def _process_one(notification: dict) -> None:
         await wa_api.send_image(wa_chat_id, img_bytes, mimetype, caption)
 
     db.update_thread_timestamp(wa_chat_id)
+    await ai_watcher.on_our_response(wa_chat_id)
     print(f"[Teams→WA] ✓ Enviado para {wa_chat_id[:30]}")
 
 
@@ -170,6 +172,7 @@ async def _route_direct_message(message: dict, teams_chat_id: str) -> None:
         await wa_api.send_image(wa_jid, img_bytes, mimetype, caption)
 
     db.update_thread_timestamp(wa_jid)
+    await ai_watcher.on_our_response(wa_jid)
     print(f"[Teams→WA] ✓ Enviado para {wa_jid[:30]}")
 
 

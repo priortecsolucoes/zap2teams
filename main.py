@@ -6,6 +6,7 @@ import uvicorn
 from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.responses import PlainTextResponse, Response
 
+import ai.watcher as ai_watcher
 from config import settings
 from storage.db import init_db, save_refresh_token, seed_chat_threads
 from teams.subscription import setup_subscription
@@ -32,6 +33,10 @@ async def lifespan(app: FastAPI):
     init_db()
     seed_chat_threads(settings.wa_jid_mappings)
     asyncio.create_task(_setup_subscription_when_ready())
+    if settings.ai_enabled and settings.openai_api_key:
+        asyncio.create_task(ai_watcher.sweep_loop())
+    elif settings.ai_enabled:
+        print("[AI watcher] AI_ENABLED=true mas OPENAI_API_KEY não configurada — camada de IA desativada.")
     yield
 
 

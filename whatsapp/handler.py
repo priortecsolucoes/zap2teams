@@ -193,11 +193,13 @@ async def handle_incoming(payload: dict) -> None:
 
         # wasSentByApi só é true quando o envio sai pela API (ex: via Teams). Uma resposta digitada
         # manualmente no WhatsApp pelo número conectado à instância vem com wasSentByApi=false, então
-        # também comparamos com o número configurado para não tratar isso como mensagem de cliente.
+        # também comparamos com o número configurado para reconhecê-la como "nossa".
         is_own_number = bool(
             settings.uazapi_own_number_digits and sender_digits == settings.uazapi_own_number_digits
         )
-        if msg.get("wasSentByApi") or is_own_number:
+        if msg.get("wasSentByApi"):
+            # Eco de mensagem que já saiu pela API (ex: relay do Teams) — não reposta no Teams
+            # para não duplicar algo que já está lá.
             await ai_watcher.on_our_response(chat_id)
             return
 
@@ -279,7 +281,9 @@ async def handle_incoming(payload: dict) -> None:
         is_own_number = bool(
             settings.uazapi_own_number_digits and sender_digits == settings.uazapi_own_number_digits
         )
-        if key.get("fromMe") or is_own_number:
+        if key.get("fromMe"):
+            # Formato Evolution não distingue envio via API de envio manual (fromMe cobre os dois) —
+            # mantém o comportamento original de não repostar no Teams.
             await ai_watcher.on_our_response(chat_id)
             return
 
@@ -316,12 +320,17 @@ async def handle_incoming(payload: dict) -> None:
         return
 
     if is_group and settings.ai_enabled:
-        await ai_watcher.on_incoming_customer_message(
-            wa_chat_id=chat_id,
-            sender_number=sender_number,
-            sender_name=sender_name,
-            text=display,
-        )
+        if is_own_number:
+            # Resposta digitada manualmente por nós no WhatsApp: fecha a janela de espera da IA,
+            # mas a mensagem continua sendo postada no Teams normalmente (não é eco da API).
+            await ai_watcher.on_our_response(chat_id)
+        else:
+            await ai_watcher.on_incoming_customer_message(
+                wa_chat_id=chat_id,
+                sender_number=sender_number,
+                sender_name=sender_name,
+                text=display,
+            )
 
     is_uazapi_msg = isinstance(msg, dict) and "chatid" in msg
     media_ctx = msg if is_uazapi_msg else {}

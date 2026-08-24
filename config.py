@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     uazapi_token: str
     uazapi_instance: str
     uazapi_webhook_secret: str = ""
+    # Número conectado à instância uazapi (só dígitos, ex: 5511999999999). Usado para reconhecer
+    # como "nossa" uma mensagem enviada manualmente pelo app/celular (não via API) — a uazapi só
+    # marca wasSentByApi=true quando o envio sai pela API (ex: via Teams).
+    uazapi_own_number: str = ""
 
     teams_tenant_id: str
     teams_client_id: str
@@ -48,6 +52,10 @@ class Settings(BaseSettings):
     @property
     def ai_response_timeout_seconds(self) -> int:
         return self.ai_response_timeout_minutes * 60
+
+    @property
+    def uazapi_own_number_digits(self) -> str:
+        return "".join(c for c in self.uazapi_own_number if c.isdigit())
 
     @property
     def uazapi_base(self) -> str:

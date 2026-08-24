@@ -188,7 +188,16 @@ async def handle_incoming(payload: dict) -> None:
     if msg and isinstance(msg, dict) and "chatid" in msg:
         # Uazapi flat format
         chat_id: str = msg.get("chatid", "")
-        if msg.get("wasSentByApi"):
+        sender_number: str = (msg.get("sender") or "").replace("@s.whatsapp.net", "") or chat_id
+        sender_digits = "".join(c for c in sender_number if c.isdigit())
+
+        # wasSentByApi só é true quando o envio sai pela API (ex: via Teams). Uma resposta digitada
+        # manualmente no WhatsApp pelo número conectado à instância vem com wasSentByApi=false, então
+        # também comparamos com o número configurado para não tratar isso como mensagem de cliente.
+        is_own_number = bool(
+            settings.uazapi_own_number_digits and sender_digits == settings.uazapi_own_number_digits
+        )
+        if msg.get("wasSentByApi") or is_own_number:
             await ai_watcher.on_our_response(chat_id)
             return
 
@@ -198,7 +207,6 @@ async def handle_incoming(payload: dict) -> None:
 
         is_group: bool = msg.get("isGroup") or chat_id.endswith("@g.us")
         sender_name: str = msg.get("senderName") or "Desconhecido"
-        sender_number: str = (msg.get("sender") or "").replace("@s.whatsapp.net", "") or chat_id
         group_name: str = (
             msg.get("groupName")
             or (chat_id.replace("@g.us", "") if is_group else sender_name)
@@ -265,7 +273,13 @@ async def handle_incoming(payload: dict) -> None:
         key = data.get("key") or {}
 
         chat_id = key.get("remoteJid", "")
-        if key.get("fromMe"):
+        sender_jid: str = data.get("participant") or key.get("participant", "")
+        sender_number = sender_jid.replace("@s.whatsapp.net", "") or chat_id
+        sender_digits = "".join(c for c in sender_number if c.isdigit())
+        is_own_number = bool(
+            settings.uazapi_own_number_digits and sender_digits == settings.uazapi_own_number_digits
+        )
+        if key.get("fromMe") or is_own_number:
             await ai_watcher.on_our_response(chat_id)
             return
 
@@ -274,9 +288,7 @@ async def handle_incoming(payload: dict) -> None:
             return
 
         is_group = chat_id.endswith("@g.us")
-        sender_jid: str = data.get("participant") or key.get("participant", "")
         sender_name = data.get("pushName") or data.get("notifyName") or "Desconhecido"
-        sender_number = sender_jid.replace("@s.whatsapp.net", "") or chat_id
         chat_obj = payload.get("chat") or {}
         group_name = (
             chat_obj.get("name")

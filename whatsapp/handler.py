@@ -188,14 +188,21 @@ async def handle_incoming(payload: dict) -> None:
     if msg and isinstance(msg, dict) and "chatid" in msg:
         # Uazapi flat format
         chat_id: str = msg.get("chatid", "")
-        sender_number: str = (msg.get("sender") or "").replace("@s.whatsapp.net", "") or chat_id
+        # Remove sufixo de dispositivo multi-device ("5511999999999:12@s.whatsapp.net") antes do "@",
+        # senão o ":12" entra na extração de dígitos e quebra a comparação com o número configurado.
+        sender_number: str = ((msg.get("sender") or "").split("@")[0].split(":")[0]) or chat_id
         sender_digits = "".join(c for c in sender_number if c.isdigit())
 
         # wasSentByApi só é true quando o envio sai pela API (ex: via Teams). Uma resposta digitada
         # manualmente no WhatsApp pelo número conectado à instância vem com wasSentByApi=false, então
-        # também comparamos com o número configurado para reconhecê-la como "nossa".
+        # também comparamos com o número configurado para reconhecê-la como "nossa". Em grupos o
+        # WhatsApp pode reportar o remetente como um ID anônimo "@lid" em vez do número de telefone
+        # (feature de privacidade), quebrando essa comparação — por isso também confiamos em
+        # "fromMe" quando presente no payload, que a uazapi calcula a partir da própria sessão
+        # conectada e não depende do formato do JID do remetente.
         is_own_number = bool(
-            settings.uazapi_own_number_digits and sender_digits == settings.uazapi_own_number_digits
+            msg.get("fromMe")
+            or (settings.uazapi_own_number_digits and sender_digits == settings.uazapi_own_number_digits)
         )
         if msg.get("wasSentByApi"):
             # Eco de mensagem que já saiu pela API (ex: relay do Teams) — não reposta no Teams
@@ -320,6 +327,13 @@ async def handle_incoming(payload: dict) -> None:
         return
 
     if is_group and settings.ai_enabled:
+        # Diagnóstico: se uma mensagem nossa algum dia deixar de ser reconhecida como tal (ex:
+        # WhatsApp reportando o remetente como "@lid" em vez do número real), esse log mostra o
+        # formato bruto recebido para ajustar a detecção.
+        print(
+            f"[AI watcher] is_own_number={is_own_number} sender_digits={sender_digits!r} "
+            f"fromMe={(msg.get('fromMe') if isinstance(msg, dict) else 'n/a')!r}"
+        )
         if is_own_number:
             # Resposta digitada manualmente por nós no WhatsApp: fecha a janela de espera da IA,
             # mas a mensagem continua sendo postada no Teams normalmente (não é eco da API).

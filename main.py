@@ -78,6 +78,8 @@ async def auth_setup():
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
+        if resp.status_code >= 400:
+            print(f"[Auth] Erro ao solicitar device code ({resp.status_code}): {resp.text}")
         resp.raise_for_status()
         data = resp.json()
 

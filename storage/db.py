@@ -71,29 +71,44 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_ai_customer_messages_lookup
                 ON ai_customer_messages (wa_chat_id, sender_number, created_at);
         """)
-        try:
-            conn.execute("ALTER TABLE chat_threads ADD COLUMN teams_chat_id TEXT")
-        except Exception:
-            pass
+        for migration in (
+            "ALTER TABLE chat_threads ADD COLUMN teams_chat_id TEXT",
+            "ALTER TABLE message_map ADD COLUMN teams_chat_id TEXT",
+        ):
+            try:
+                conn.execute(migration)
+            except Exception:
+                pass
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_message_map_wa_message_id ON message_map (wa_message_id)"
+        )
 
+
+# ─────────────────────────────────────────────
+# Mapa de mensagens WA ↔ Teams (usado para citações/respostas)
+# ─────────────────────────────────────────────
 
 def save_message_map(entry: dict) -> None:
+    """Liga uma mensagem do WhatsApp à mensagem correspondente no Teams. Ignora duplicatas."""
+    if not entry.get("wa_message_id") or not entry.get("teams_message_id"):
+        return
     with _conn() as conn:
         conn.execute(
             """
-            INSERT INTO message_map
+            INSERT OR IGNORE INTO message_map
                 (wa_group_id, wa_group_name, wa_sender_name, wa_sender_number,
-                 wa_message_id, wa_message_text, teams_message_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                 wa_message_id, wa_message_text, teams_message_id, teams_chat_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                entry["wa_group_id"],
-                entry["wa_group_name"],
-                entry["wa_sender_name"],
-                entry["wa_sender_number"],
+                entry.get("wa_group_id") or "",
+                entry.get("wa_group_name") or "",
+                entry.get("wa_sender_name") or "",
+                entry.get("wa_sender_number") or "",
                 entry["wa_message_id"],
-                entry["wa_message_text"],
+                entry.get("wa_message_text") or "",
                 entry["teams_message_id"],
+                entry.get("teams_chat_id") or "",
             ),
         )
 
@@ -105,6 +120,23 @@ def find_by_teams_message_id(teams_message_id: str) -> dict | None:
             (teams_message_id,),
         ).fetchone()
         return dict(row) if row else None
+
+
+def find_by_wa_message_id(wa_message_id: str) -> dict | None:
+    """Busca pelo ID da mensagem no WhatsApp. Aceita tanto o ID curto ("3EB0...") quanto o
+    identificador completo da uazapi ("owner:3EB0..."), pois o formato pode variar."""
+    candidates = [wa_message_id]
+    if ":" in wa_message_id:
+        candidates.append(wa_message_id.split(":")[-1])
+    with _conn() as conn:
+        for candidate in candidates:
+            row = conn.execute(
+                "SELECT * FROM message_map WHERE wa_message_id = ? ORDER BY id DESC LIMIT 1",
+                (candidate,),
+            ).fetchone()
+            if row:
+                return dict(row)
+    return None
 
 
 def save_subscription(sub: dict) -> None:

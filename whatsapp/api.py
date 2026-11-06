@@ -18,20 +18,26 @@ async def send_text(chat_id: str, text: str) -> dict:
         return resp.json()
 
 
-async def send_image(chat_id: str, image_bytes: bytes, mimetype: str, caption: str = "") -> dict:
-    """Envia imagem via Uazapi /send/media com type=image e arquivo em base64."""
+async def send_image(
+    chat_id: str, image_bytes: bytes, mimetype: str, caption: str = "", reply_id: str = ""
+) -> dict:
+    """Envia imagem via Uazapi /send/media com type=image e arquivo em base64.
+    Com reply_id, a imagem sai citando essa mensagem (se a uazapi recusar, envia sem citar)."""
     import base64 as _b64
+    payload = {
+        "number": chat_id,
+        "type": "image",
+        "file": _b64.b64encode(image_bytes).decode(),
+        "text": caption or "",
+    }
+    if reply_id:
+        payload["replyid"] = reply_id
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"{settings.uazapi_base}/send/media",
-            headers=_headers(),
-            json={
-                "number": chat_id,
-                "type": "image",
-                "file": _b64.b64encode(image_bytes).decode(),
-                "text": caption or "",
-            },
-        )
+        resp = await client.post(f"{settings.uazapi_base}/send/media", headers=_headers(), json=payload)
+        if not resp.is_success and reply_id:
+            print(f"[WA API] Citação na imagem recusada ({resp.status_code}), enviando sem citar")
+            payload.pop("replyid")
+            resp = await client.post(f"{settings.uazapi_base}/send/media", headers=_headers(), json=payload)
         if not resp.is_success:
             raise Exception(f"send/media {resp.status_code}: {resp.text[:200]}")
         print("[WA API] send_image OK")
@@ -39,14 +45,33 @@ async def send_image(chat_id: str, image_bytes: bytes, mimetype: str, caption: s
 
 
 async def send_reply(chat_id: str, quoted_msg_id: str, text: str) -> dict:
+    """Envia texto citando uma mensagem (citação nativa do WhatsApp).
+
+    A uazapi só consegue citar mensagens que ainda estão no histórico local dela (até ~7 dias).
+    Se ela recusar a citação (resposta HTTP de erro), reenvia sem citar para não perder a
+    mensagem. Em timeout não reenvia: a primeira tentativa pode ter saído (evita duplicar)."""
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
             f"{settings.uazapi_base}/send/text",
             headers=_headers(),
-            json={"number": chat_id, "text": text, "quoted": quoted_msg_id},
+            json={"number": chat_id, "text": text, "replyid": quoted_msg_id},
         )
-        resp.raise_for_status()
-        return resp.json()
+    if resp.is_success:
+        return resp.json() if resp.content else {}
+    print(f"[WA API] Citação recusada ({resp.status_code}: {resp.text[:200]}), enviando sem citar")
+    return await send_text(chat_id, text)
+
+
+def get_message_id(send_response: dict) -> str:
+    """Extrai o ID do WhatsApp (messageid) da resposta de um envio da uazapi."""
+    if not isinstance(send_response, dict):
+        return ""
+    nested = send_response.get("message")
+    return (
+        send_response.get("messageid")
+        or (nested.get("messageid") if isinstance(nested, dict) else "")
+        or ""
+    )
 
 
 async def download_media(url: str) -> bytes:

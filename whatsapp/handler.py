@@ -86,6 +86,58 @@ def _uazapi_media(msg: dict) -> tuple[str, str, str, str]:
     return msg_type, media_url, mimetype, caption
 
 
+_QUOTE_GENERIC = "↩️ Em resposta a uma mensagem anterior"
+
+
+def _find_context_info(obj) -> dict:
+    """Procura o contextInfo (dados da mensagem citada) no conteúdo bruto da mensagem.
+    Ele fica no nível do tipo da mensagem: content.contextInfo (uazapi) ou
+    message.extendedTextMessage.contextInfo / message.imageMessage.contextInfo etc."""
+    if not isinstance(obj, dict):
+        return {}
+    ctx = obj.get("contextInfo")
+    if isinstance(ctx, dict):
+        return ctx
+    for value in obj.values():
+        if isinstance(value, dict) and isinstance(value.get("contextInfo"), dict):
+            return value["contextInfo"]
+    return {}
+
+
+def _resolve_quote(quoted_id: str, context_info: dict, teams_chat_id: str) -> dict | None:
+    """Monta os dados da mensagem citada para o Teams. Ordem: nosso mapa WA↔Teams (tem o ID no
+    Teams, permite citação nativa) → contextInfo do payload (só texto) → frase genérica."""
+    quoted_id = quoted_id or context_info.get("stanzaID") or context_info.get("stanzaId") or ""
+    if not quoted_id and not context_info.get("quotedMessage"):
+        return None
+
+    teams_message_id = None
+    sender = ""
+    preview = ""
+
+    row = db.find_by_wa_message_id(quoted_id) if quoted_id else None
+    if row:
+        # Só usa o ID do Teams se ele for do mesmo chat (o mapeamento pode ter mudado).
+        if not row.get("teams_chat_id") or row["teams_chat_id"] == teams_chat_id:
+            teams_message_id = row["teams_message_id"]
+        sender = row.get("wa_sender_name") or ""
+        preview = row.get("wa_message_text") or ""
+
+    quoted_message = context_info.get("quotedMessage")
+    if not preview and isinstance(quoted_message, dict):
+        preview = _extract_text(quoted_message) or ""
+    if not sender:
+        participant = context_info.get("participant") or ""
+        if participant.endswith("@s.whatsapp.net"):
+            sender = "+" + participant.split("@")[0].split(":")[0]
+
+    return {
+        "teams_message_id": teams_message_id,
+        "sender": sender,
+        "preview": preview or _QUOTE_GENERIC,
+    }
+
+
 def _media_label(msg_type: str, caption: str, msg: dict) -> str:
     cap = f" — {caption}" if caption else ""
     if "image" in msg_type:
@@ -184,6 +236,8 @@ async def handle_incoming(payload: dict) -> None:
     thumbnail_b64 = ""
     media_key_b64 = ""
     doc_filename = ""
+    quoted_id = ""
+    context_info: dict = {}
 
     if msg and isinstance(msg, dict) and "chatid" in msg:
         # Uazapi flat format
@@ -276,6 +330,17 @@ async def handle_incoming(payload: dict) -> None:
             doc_filename = doc_filename or ""
         text = _extract_text_uazapi(msg)
 
+        # Citação: a uazapi documenta só "quoted" (ID da mensagem citada). O texto citado
+        # costuma vir no contextInfo do content bruto, mas isso não é documentado.
+        quoted_id = msg.get("quoted") or ""
+        context_info = _find_context_info(_content) or _find_context_info(msg.get("message"))
+        if quoted_id or context_info.get("quotedMessage"):
+            import json as _json
+            print(
+                f"[WA handler] Mensagem com citação | quoted={quoted_id!r} | "
+                f"content={_json.dumps(_content, ensure_ascii=False, default=str)[:3000]}"
+            )
+
     else:
         # Evolution API / generic format
         data = payload.get("data") or payload
@@ -308,6 +373,7 @@ async def handle_incoming(payload: dict) -> None:
             or (chat_id.replace("@g.us", "") if is_group else sender_name)
         )
         text = _extract_text(data.get("message"))
+        context_info = _find_context_info(data.get("message"))
 
     is_image = "image" in msg_type
     is_audio = "audio" in msg_type
@@ -349,23 +415,46 @@ async def handle_incoming(payload: dict) -> None:
     is_uazapi_msg = isinstance(msg, dict) and "chatid" in msg
     media_ctx = msg if is_uazapi_msg else {}
 
+    quote = _resolve_quote(quoted_id, context_info, teams_chat_id)
+    if quote:
+        modo = "nativa" if quote["teams_message_id"] else "bloco"
+        print(f'[WA→Teams] Citação ({modo}) de {quote["sender"] or "?"}: "{quote["preview"][:60]}"')
+
+    # IDs das mensagens criadas no Teams para esta mensagem do WA (para citações futuras).
+    teams_msg_ids: list[str] = []
+
+    async def _post_label_fallback() -> None:
+        teams_msg_ids.append(await teams_api.post_to_chat(
+            teams_chat_id,
+            sender_name=sender_name,
+            chat_name=group_name,
+            text=_media_label(msg_type, caption, media_ctx),
+            wa_chat_id=chat_id,
+            wa_message_id=message_id,
+            quote=quote,
+        ))
+        print("[WA→Teams] ✓ Texto (fallback) enviado ao chat")
+
     try:
         if text and is_image:
-            # Texto + imagem: posta o texto primeiro (com ref [wa:]) e depois a imagem
-            await teams_api.post_to_chat(
+            # Texto + imagem: posta o texto primeiro (com ref [wa:] e citação) e depois a imagem
+            teams_msg_ids.append(await teams_api.post_to_chat(
                 teams_chat_id,
                 sender_name=sender_name,
                 chat_name=group_name,
                 text=text,
                 wa_chat_id=chat_id,
                 wa_message_id=message_id,
-            )
+                quote=quote,
+            ))
             print("[WA→Teams] ✓ Texto enviado ao chat")
             try:
                 image_bytes = await _download_image(media_url, message_id, chat_id, is_uazapi_msg, thumbnail_b64, media_key_b64, msg_type)
                 if len(image_bytes) > 4 * 1024 * 1024:
                     raise Exception("imagem maior que 4 MB")
-                await teams_api.post_image_only(teams_chat_id, image_bytes, mimetype or "image/jpeg")
+                teams_msg_ids.append(
+                    await teams_api.post_image_only(teams_chat_id, image_bytes, mimetype or "image/jpeg")
+                )
                 print("[WA→Teams] ✓ Imagem enviada ao chat")
             except Exception as img_err:
                 print(f"[WA→Teams] Falha ao enviar imagem ({img_err})")
@@ -376,7 +465,7 @@ async def handle_incoming(payload: dict) -> None:
                 image_bytes = await _download_image(media_url, message_id, chat_id, is_uazapi_msg, thumbnail_b64, media_key_b64, msg_type)
                 if len(image_bytes) > 4 * 1024 * 1024:
                     raise Exception("imagem maior que 4 MB")
-                await teams_api.post_image_to_chat(
+                teams_msg_ids.append(await teams_api.post_image_to_chat(
                     teams_chat_id,
                     sender_name=sender_name,
                     chat_name=group_name,
@@ -385,19 +474,12 @@ async def handle_incoming(payload: dict) -> None:
                     wa_chat_id=chat_id,
                     wa_message_id=message_id,
                     caption=caption,
-                )
+                    quote=quote,
+                ))
                 print("[WA→Teams] ✓ Imagem enviada ao chat")
             except Exception as img_err:
                 print(f"[WA→Teams] Falha ao enviar imagem ({img_err}), enviando como texto")
-                await teams_api.post_to_chat(
-                    teams_chat_id,
-                    sender_name=sender_name,
-                    chat_name=group_name,
-                    text=_media_label(msg_type, caption, media_ctx),
-                    wa_chat_id=chat_id,
-                    wa_message_id=message_id,
-                )
-                print("[WA→Teams] ✓ Texto (fallback) enviado ao chat")
+                await _post_label_fallback()
 
         elif is_audio:
             try:
@@ -407,7 +489,7 @@ async def handle_incoming(payload: dict) -> None:
                     "", media_key_b64, msg_type
                 )
                 print(f"[WA→Teams] Áudio baixado: {len(audio_bytes)} bytes ({mimetype or 'audio/ogg'})")
-                await teams_api.post_audio_to_chat(
+                teams_msg_ids.append(await teams_api.post_audio_to_chat(
                     teams_chat_id,
                     sender_name=sender_name,
                     chat_name=group_name,
@@ -416,19 +498,12 @@ async def handle_incoming(payload: dict) -> None:
                     wa_chat_id=chat_id,
                     wa_message_id=message_id,
                     caption=caption,
-                )
+                    quote=quote,
+                ))
                 print("[WA→Teams] ✓ Áudio enviado ao chat")
             except Exception as audio_err:
                 print(f"[WA→Teams] Falha ao enviar áudio ({audio_err}), enviando como texto")
-                await teams_api.post_to_chat(
-                    teams_chat_id,
-                    sender_name=sender_name,
-                    chat_name=group_name,
-                    text=_media_label(msg_type, caption, media_ctx),
-                    wa_chat_id=chat_id,
-                    wa_message_id=message_id,
-                )
-                print("[WA→Teams] ✓ Texto (fallback) enviado ao chat")
+                await _post_label_fallback()
 
         elif is_video:
             try:
@@ -438,7 +513,7 @@ async def handle_incoming(payload: dict) -> None:
                     "", media_key_b64, msg_type
                 )
                 print(f"[WA→Teams] Vídeo baixado: {len(video_bytes)} bytes ({mimetype or 'video/mp4'})")
-                await teams_api.post_video_to_chat(
+                teams_msg_ids.append(await teams_api.post_video_to_chat(
                     teams_chat_id,
                     sender_name=sender_name,
                     chat_name=group_name,
@@ -447,19 +522,12 @@ async def handle_incoming(payload: dict) -> None:
                     wa_chat_id=chat_id,
                     wa_message_id=message_id,
                     caption=caption,
-                )
+                    quote=quote,
+                ))
                 print("[WA→Teams] ✓ Vídeo enviado ao chat")
             except Exception as video_err:
                 print(f"[WA→Teams] Falha ao enviar vídeo ({video_err}), enviando como texto")
-                await teams_api.post_to_chat(
-                    teams_chat_id,
-                    sender_name=sender_name,
-                    chat_name=group_name,
-                    text=_media_label(msg_type, caption, media_ctx),
-                    wa_chat_id=chat_id,
-                    wa_message_id=message_id,
-                )
-                print("[WA→Teams] ✓ Texto (fallback) enviado ao chat")
+                await _post_label_fallback()
 
         elif is_document:
             try:
@@ -469,7 +537,7 @@ async def handle_incoming(payload: dict) -> None:
                     "", media_key_b64, msg_type
                 )
                 print(f"[WA→Teams] Documento baixado: {len(doc_bytes)} bytes ({mimetype or 'application/octet-stream'})")
-                await teams_api.post_document_to_chat(
+                teams_msg_ids.append(await teams_api.post_document_to_chat(
                     teams_chat_id,
                     sender_name=sender_name,
                     chat_name=group_name,
@@ -479,32 +547,42 @@ async def handle_incoming(payload: dict) -> None:
                     wa_chat_id=chat_id,
                     wa_message_id=message_id,
                     caption=caption,
-                )
+                    quote=quote,
+                ))
                 print("[WA→Teams] ✓ Documento enviado ao chat")
             except Exception as doc_err:
                 print(f"[WA→Teams] Falha ao enviar documento ({doc_err}), enviando como texto")
-                await teams_api.post_to_chat(
-                    teams_chat_id,
-                    sender_name=sender_name,
-                    chat_name=group_name,
-                    text=_media_label(msg_type, caption, media_ctx),
-                    wa_chat_id=chat_id,
-                    wa_message_id=message_id,
-                )
-                print("[WA→Teams] ✓ Texto (fallback) enviado ao chat")
+                await _post_label_fallback()
 
         else:
             # Texto ou label de mídia
-            send_text = text or _media_label(msg_type, caption, media_ctx)
-            await teams_api.post_to_chat(
+            teams_msg_ids.append(await teams_api.post_to_chat(
                 teams_chat_id,
                 sender_name=sender_name,
                 chat_name=group_name,
-                text=send_text,
+                text=text or _media_label(msg_type, caption, media_ctx),
                 wa_chat_id=chat_id,
                 wa_message_id=message_id,
-            )
+                quote=quote,
+            ))
             print("[WA→Teams] ✓ Nova mensagem no chat")
 
     except Exception as e:
         print(f"[WA→Teams] Erro ao postar no Teams: {e}")
+
+    # Guarda o vínculo WA↔Teams para que respostas futuras (nos dois sentidos) possam citar
+    # esta mensagem. Em texto + imagem, as duas mensagens do Teams apontam para a mesma do WA.
+    for teams_msg_id in teams_msg_ids:
+        try:
+            db.save_message_map({
+                "wa_group_id": chat_id,
+                "wa_group_name": group_name,
+                "wa_sender_name": sender_name,
+                "wa_sender_number": sender_number,
+                "wa_message_id": message_id,
+                "wa_message_text": display,
+                "teams_message_id": teams_msg_id,
+                "teams_chat_id": teams_chat_id,
+            })
+        except Exception as e:
+            print(f"[WA→Teams] Falha ao gravar mapa da mensagem: {e}")

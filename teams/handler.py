@@ -1,3 +1,4 @@
+import json
 import re
 
 import ai.watcher as ai_watcher
@@ -5,6 +6,9 @@ import whatsapp.api as wa_api
 import teams.api as teams_api
 from config import settings
 from storage import db
+
+# Referência oculta que toda mensagem vinda do WhatsApp carrega no Teams: [wa:chatId|msgId|remetente]
+_WA_REF_RE = re.compile(r'\[wa:([^|\]]+)\|([^|\]]+)\|([^\]]+)\]')
 
 
 async def process_notifications(body: dict) -> None:
@@ -60,46 +64,149 @@ async def _process_one(notification: dict) -> None:
     else:
         return
 
+    # Resposta em thread: responde no WA citando a mensagem-pai (que veio do WhatsApp).
     if message.get("messageType") != "message":
         return
 
-    from_info = message.get("from") or {}
     content: str = (message.get("body") or {}).get("content", "")
-
     if "📱" in content:
         return
 
+    reply_text = _strip_html(content).strip()
+    images = await _extract_images(message, teams_chat_id)
+    if not reply_text and not images:
+        return
+
+    parent_message = await teams_api.get_chat_message(teams_chat_id, parent_message_id)
+    parent_content: str = (parent_message.get("body") or {}).get("content", "")
+    wa_match = _WA_REF_RE.search(parent_content)
+    if not wa_match:
+        print(f"[Teams→WA] Ref WA não encontrada na msg pai {parent_message_id}")
+        return
+
+    wa_chat_id = wa_match.group(1).strip()
+    parent_wa_message_id = wa_match.group(2).strip()
+
+    # Uma citação explícita dentro da thread tem prioridade sobre a mensagem-pai.
+    quoted_wa_id = await _resolve_quoted_wa_id(message, teams_chat_id) or parent_wa_message_id
+    await _relay_to_wa(message, teams_chat_id, wa_chat_id, reply_text, images, quoted_wa_id)
+
+
+async def _route_direct_message(message: dict, teams_chat_id: str) -> None:
+    """Mensagem solta no chat do Teams (fora de thread). Se o atendente usou "Responder"
+    citando uma mensagem, a resposta sai no WhatsApp com citação nativa."""
+    if message.get("messageType") != "message":
+        return
+
+    content: str = (message.get("body") or {}).get("content", "")
     reply_text = _strip_html(content).strip()
     images = await _extract_images(message, teams_chat_id)
 
     if not reply_text and not images:
         return
 
-    sender_name: str = from_info.get("user", {}).get("displayName", "Colaborador")
-
-    parent_message = await teams_api.get_chat_message(teams_chat_id, parent_message_id)
-    parent_content: str = (parent_message.get("body") or {}).get("content", "")
-    wa_match = re.search(r'\[wa:([^|\]]+)\|([^|\]]+)\|([^\]]+)\]', parent_content)
-    if not wa_match:
-        print(f"[Teams→WA] Ref WA não encontrada na msg pai {parent_message_id}")
+    wa_jid = db.find_wa_jid_by_teams_chat(teams_chat_id)
+    if not wa_jid:
+        wa_group_name = settings.chat_mappings.get(teams_chat_id, teams_chat_id[:30])
+        print(f"[Teams→WA] JID WA não encontrado para '{wa_group_name}' — aguardando primeira msg WA")
         return
 
-    wa_chat_id = wa_match.group(1).strip()
-    wa_message_id = wa_match.group(2).strip()
+    quoted_wa_id = await _resolve_quoted_wa_id(message, teams_chat_id)
+    await _relay_to_wa(message, teams_chat_id, wa_jid, reply_text, images, quoted_wa_id)
+
+
+async def _relay_to_wa(
+    message: dict,
+    teams_chat_id: str,
+    wa_jid: str,
+    reply_text: str,
+    images: list[tuple[bytes, str]],
+    quoted_wa_id: str | None,
+) -> None:
+    """Envia texto/imagens do Teams para o WhatsApp, citando quoted_wa_id quando houver."""
+    from_info = message.get("from") or {}
+    sender_name: str = (from_info.get("user") or {}).get("displayName") or "Colaborador"
+    quote_log = f" (citando {quoted_wa_id[:20]})" if quoted_wa_id else ""
+
+    first_response: dict | None = None
 
     if reply_text:
         message_text = f"*{sender_name}:*\n{reply_text}"
-        print(f'[Teams→WA] "{sender_name}" → {wa_chat_id[:30]} | "{reply_text[:80]}"')
-        await wa_api.send_reply(wa_chat_id, wa_message_id, message_text)
+        print(f'[Teams→WA] "{sender_name}"{quote_log} → {wa_jid[:30]} | "{reply_text[:80]}"')
+        if quoted_wa_id:
+            first_response = await wa_api.send_reply(wa_jid, quoted_wa_id, message_text)
+        else:
+            first_response = await wa_api.send_text(wa_jid, message_text)
 
     for img_bytes, mimetype in images:
         caption = f"*{sender_name}*" if not reply_text else ""
-        print(f'[Teams→WA] "{sender_name}" → imagem {mimetype} ({len(img_bytes)} bytes) → {wa_chat_id[:30]}')
-        await wa_api.send_image(wa_chat_id, img_bytes, mimetype, caption)
+        # Sem texto, a primeira imagem leva a citação.
+        reply_id = quoted_wa_id if (quoted_wa_id and first_response is None) else ""
+        print(f'[Teams→WA] "{sender_name}" → imagem {mimetype} ({len(img_bytes)} bytes) → {wa_jid[:30]}')
+        resp = await wa_api.send_image(wa_jid, img_bytes, mimetype, caption, reply_id=reply_id)
+        if first_response is None:
+            first_response = resp
 
-    db.update_thread_timestamp(wa_chat_id)
-    await ai_watcher.on_our_response(wa_chat_id)
-    print(f"[Teams→WA] ✓ Enviado para {wa_chat_id[:30]}")
+    # Guarda o vínculo para que, se o cliente citar esta resposta no WhatsApp, o Teams
+    # consiga apontar para a mensagem original do atendente.
+    wa_message_id = wa_api.get_message_id(first_response or {})
+    if wa_message_id and message.get("id"):
+        try:
+            db.save_message_map({
+                "wa_group_id": wa_jid,
+                "wa_group_name": settings.chat_mappings.get(teams_chat_id, ""),
+                "wa_sender_name": sender_name,
+                "wa_sender_number": "",
+                "wa_message_id": wa_message_id,
+                "wa_message_text": reply_text or "📷 [Foto]",
+                "teams_message_id": message["id"],
+                "teams_chat_id": teams_chat_id,
+            })
+        except Exception as e:
+            print(f"[Teams→WA] Falha ao gravar mapa da mensagem: {e}")
+
+    db.update_thread_timestamp(wa_jid)
+    await ai_watcher.on_our_response(wa_jid)
+    print(f"[Teams→WA] ✓ Enviado para {wa_jid[:30]}")
+
+
+def _find_message_reference(message: dict) -> str | None:
+    """Retorna o ID da mensagem do Teams citada via "Responder" (attachment messageReference)."""
+    for att in message.get("attachments") or []:
+        if att.get("contentType") != "messageReference":
+            continue
+        ref_id = att.get("id")
+        if not ref_id:
+            try:
+                ref_id = json.loads(att.get("content") or "{}").get("messageId")
+            except ValueError:
+                ref_id = None
+        if ref_id:
+            return ref_id
+    return None
+
+
+async def _resolve_quoted_wa_id(message: dict, teams_chat_id: str) -> str | None:
+    """Traduz a mensagem citada no Teams para o ID dela no WhatsApp.
+    Ordem: nosso mapa WA↔Teams → referência [wa:...] escondida na própria mensagem citada."""
+    quoted_teams_id = _find_message_reference(message)
+    if not quoted_teams_id:
+        return None
+
+    row = db.find_by_teams_message_id(quoted_teams_id)
+    if row:
+        return row["wa_message_id"]
+
+    try:
+        quoted = await teams_api.get_chat_message(teams_chat_id, quoted_teams_id)
+        wa_match = _WA_REF_RE.search((quoted.get("body") or {}).get("content", ""))
+        if wa_match:
+            return wa_match.group(2).strip()
+    except Exception as e:
+        print(f"[Teams→WA] Não foi possível ler a mensagem citada {quoted_teams_id}: {e}")
+
+    print(f"[Teams→WA] Mensagem citada {quoted_teams_id} sem correspondente no WhatsApp, enviando sem citar")
+    return None
 
 
 async def _extract_images(message: dict, teams_chat_id: str) -> list[tuple[bytes, str]]:
@@ -141,44 +248,9 @@ async def _extract_images(message: dict, teams_chat_id: str) -> list[tuple[bytes
     return results
 
 
-async def _route_direct_message(message: dict, teams_chat_id: str) -> None:
-    if message.get("messageType") != "message":
-        return
-
-    from_info = message.get("from") or {}
-    content: str = (message.get("body") or {}).get("content", "")
-    reply_text = _strip_html(content).strip()
-    images = await _extract_images(message, teams_chat_id)
-
-    if not reply_text and not images:
-        return
-
-    wa_jid = db.find_wa_jid_by_teams_chat(teams_chat_id)
-    if not wa_jid:
-        wa_group_name = settings.chat_mappings.get(teams_chat_id, teams_chat_id[:30])
-        print(f"[Teams→WA] JID WA não encontrado para '{wa_group_name}' — aguardando primeira msg WA")
-        return
-
-    sender_name = from_info.get("user", {}).get("displayName", "Colaborador")
-
-    if reply_text:
-        message_text = f"*{sender_name}:*\n{reply_text}"
-        print(f'[Teams→WA] "{sender_name}" (direto) → {wa_jid[:30]} | "{reply_text[:80]}"')
-        await wa_api.send_text(wa_jid, message_text)
-
-    for img_bytes, mimetype in images:
-        caption = f"*{sender_name}*" if not reply_text else ""
-        print(f'[Teams→WA] "{sender_name}" → imagem {mimetype} ({len(img_bytes)} bytes) → {wa_jid[:30]}')
-        await wa_api.send_image(wa_jid, img_bytes, mimetype, caption)
-
-    db.update_thread_timestamp(wa_jid)
-    await ai_watcher.on_our_response(wa_jid)
-    print(f"[Teams→WA] ✓ Enviado para {wa_jid[:30]}")
-
-
 def _maybe_save_thread(message_id: str, message: dict, teams_chat_id: str = "") -> None:
     content: str = (message.get("body") or {}).get("content", "")
-    wa_match = re.search(r'\[wa:([^|\]]+)\|([^|\]]+)\|([^\]]+)\]', content)
+    wa_match = _WA_REF_RE.search(content)
     if wa_match:
         wa_chat_id = wa_match.group(1).strip()
         db.save_thread(wa_chat_id, message_id, teams_chat_id)

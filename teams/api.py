@@ -98,6 +98,121 @@ def _esc(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+# ─────────────────────────────────────────────
+# Postagem em chat + citação (reply/quote)
+# ─────────────────────────────────────────────
+# Uma citação é um dict {"teams_message_id": str | None, "sender": str, "preview": str}:
+#  - com teams_message_id → tenta o cartão de citação nativo do Teams (attachment messageReference);
+#  - sem ele, ou se o Graph recusar → bloco <blockquote> com remetente e trecho da mensagem citada.
+
+_QUOTE_PREVIEW_MAX = 200
+
+
+def _truncate(text: str, limit: int = _QUOTE_PREVIEW_MAX) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _quote_blockquote(quote: dict) -> str:
+    sender = quote.get("sender") or ""
+    head = f"<strong>{_esc(sender)}</strong><br>" if sender else ""
+    return f"<blockquote>{head}{_esc(_truncate(quote.get('preview') or ''))}</blockquote>"
+
+
+async def _quote_reference(chat_id: str, quote: dict) -> tuple[str, dict] | None:
+    """Monta o attachment messageReference. Busca a mensagem citada no Graph para usar o
+    remetente real (o Teams exige uma identidade válida); se não achar, retorna None."""
+    import json
+    msg_id = quote.get("teams_message_id")
+    if not msg_id:
+        return None
+    try:
+        quoted_msg = await get_chat_message(chat_id, msg_id)
+    except Exception as e:
+        print(f"[Teams] Mensagem citada {msg_id} não encontrada no Graph ({e})")
+        return None
+    user = dict(((quoted_msg.get("from") or {}).get("user")) or {})
+    if not user.get("id"):
+        return None
+    # Mostra o nome de quem escreveu no WhatsApp, e não o da conta-ponte que postou no Teams.
+    if quote.get("sender"):
+        user["displayName"] = quote["sender"]
+    user.setdefault("userIdentityType", "aadUser")
+    attachment = {
+        "id": msg_id,
+        "contentType": "messageReference",
+        "content": json.dumps({
+            "messageId": msg_id,
+            "messagePreview": _truncate(quote.get("preview") or ""),
+            "messageSender": {"application": None, "device": None, "user": user},
+        }),
+    }
+    return f'<attachment id="{msg_id}"></attachment>', attachment
+
+
+async def _send_chat_message(
+    chat_id: str,
+    content: str,
+    attachments: list[dict] | None = None,
+    hosted_contents: list[dict] | None = None,
+    timeout: int = 30,
+) -> str:
+    token = await _get_delegated_token()
+    payload: dict = {"body": {"contentType": "html", "content": content}}
+    if attachments:
+        payload["attachments"] = attachments
+    if hosted_contents:
+        payload["hostedContents"] = hosted_contents
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(
+            f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=payload,
+        )
+    if not resp.is_success:
+        raise Exception(f"Chat post {resp.status_code}: {resp.text[:300]}")
+    return (resp.json() if resp.content else {}).get("id", "")
+
+
+async def _post_with_quote(
+    chat_id: str,
+    header_html: str,
+    body_html: str,
+    quote: dict | None = None,
+    attachments: list[dict] | None = None,
+    hosted_contents: list[dict] | None = None,
+    timeout: int = 30,
+) -> str:
+    """Posta header + (citação) + body e retorna o ID da mensagem criada no Teams."""
+    attachments = list(attachments or [])
+    if quote:
+        reference = await _quote_reference(chat_id, quote)
+        if reference:
+            ref_html, ref_attachment = reference
+            try:
+                return await _send_chat_message(
+                    chat_id,
+                    ref_html + header_html + body_html,
+                    attachments + [ref_attachment],
+                    hosted_contents,
+                    timeout,
+                )
+            except Exception as e:
+                print(f"[Teams] Citação nativa recusada ({e}), usando bloco de citação")
+        header_html += _quote_blockquote(quote)
+    return await _send_chat_message(chat_id, header_html + body_html, attachments, hosted_contents, timeout)
+
+
+def _wa_header(sender_name: str, chat_name: str) -> str:
+    return f"<p>📱 <strong>{_esc(sender_name)}</strong> &nbsp;·&nbsp; {_esc(chat_name)}</p>"
+
+
+def _wa_ref(wa_chat_id: str, wa_message_id: str, sender_name: str) -> str:
+    safe_sender = sender_name.replace("|", "").replace("[", "").replace("]", "")
+    ref = f"[wa:{wa_chat_id}|{wa_message_id}|{safe_sender}]"
+    return f"<p><em><span style='font-size:11px;color:gray'>{ref}</span></em></p>"
+
+
 async def post_image_to_chat(
     chat_id: str,
     sender_name: str,
@@ -107,60 +222,43 @@ async def post_image_to_chat(
     wa_chat_id: str,
     wa_message_id: str,
     caption: str = "",
-) -> None:
+    quote: dict | None = None,
+) -> str:
     import base64
-    token = await _get_delegated_token()
-    safe_sender = sender_name.replace("|", "").replace("[", "").replace("]", "")
-    ref = f"[wa:{wa_chat_id}|{wa_message_id}|{safe_sender}]"
     caption_html = f"<p>{_esc(caption)}</p>" if caption else ""
-    content = (
-        f"<p>📱 <strong>{_esc(sender_name)}</strong> &nbsp;·&nbsp; {_esc(chat_name)}</p>"
+    body = (
         f'<p><img src="../hostedContents/1/$value" style="max-width:600px"></p>'
         f"{caption_html}"
-        f"<p><em><span style='font-size:11px;color:gray'>{ref}</span></em></p>"
+        f"{_wa_ref(wa_chat_id, wa_message_id, sender_name)}"
     )
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={
-                "body": {"contentType": "html", "content": content},
-                "hostedContents": [
-                    {
-                        "@microsoft.graph.temporaryId": "1",
-                        "contentBytes": base64.b64encode(image_bytes).decode(),
-                        "contentType": content_type,
-                    }
-                ],
-            },
-        )
-        if not resp.is_success:
-            raise Exception(f"Chat image post {resp.status_code}: {resp.text}")
+    return await _post_with_quote(
+        chat_id,
+        _wa_header(sender_name, chat_name),
+        body,
+        quote=quote,
+        hosted_contents=[
+            {
+                "@microsoft.graph.temporaryId": "1",
+                "contentBytes": base64.b64encode(image_bytes).decode(),
+                "contentType": content_type,
+            }
+        ],
+    )
 
 
-async def post_image_only(chat_id: str, image_bytes: bytes, content_type: str) -> None:
+async def post_image_only(chat_id: str, image_bytes: bytes, content_type: str) -> str:
     import base64
-    token = await _get_delegated_token()
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={
-                "body": {
-                    "contentType": "html",
-                    "content": '<p><img src="../hostedContents/1/$value" style="max-width:600px"></p><p><span style="font-size:1px">📱</span></p>',
-                },
-                "hostedContents": [
-                    {
-                        "@microsoft.graph.temporaryId": "1",
-                        "contentBytes": base64.b64encode(image_bytes).decode(),
-                        "contentType": content_type,
-                    }
-                ],
-            },
-        )
-        if not resp.is_success:
-            raise Exception(f"Chat image post {resp.status_code}: {resp.text}")
+    return await _send_chat_message(
+        chat_id,
+        '<p><img src="../hostedContents/1/$value" style="max-width:600px"></p><p><span style="font-size:1px">📱</span></p>',
+        hosted_contents=[
+            {
+                "@microsoft.graph.temporaryId": "1",
+                "contentBytes": base64.b64encode(image_bytes).decode(),
+                "contentType": content_type,
+            }
+        ],
+    )
 
 
 async def post_audio_to_chat(
@@ -172,12 +270,11 @@ async def post_audio_to_chat(
     wa_chat_id: str,
     wa_message_id: str,
     caption: str = "",
-) -> None:
+    quote: dict | None = None,
+) -> str:
     """Envia áudio como arquivo anexo no Teams via OneDrive do usuário autenticado."""
     import re
     token = await _get_delegated_token()
-    safe_sender = sender_name.replace("|", "").replace("[", "").replace("]", "")
-    ref = f"[wa:{wa_chat_id}|{wa_message_id}|{safe_sender}]"
 
     ext_map = {
         "audio/ogg": "ogg", "audio/mpeg": "mp3", "audio/wav": "wav",
@@ -212,30 +309,27 @@ async def post_audio_to_chat(
         if link_resp.is_success:
             share_url = link_resp.json().get("link", {}).get("webUrl", web_url)
 
-        # 3. Posta mensagem no chat com o arquivo como anexo referenciado
-        caption_html = f"<p>{_esc(caption)}</p>" if caption else ""
-        content = (
-            f"<p>📱 <strong>{_esc(sender_name)}</strong> &nbsp;·&nbsp; {_esc(chat_name)}</p>"
-            f"<p>🎵 Áudio WhatsApp</p>"
-            f"{caption_html}"
-            f'<attachment id="{item_id}"></attachment>'
-            f"<p><em><span style='font-size:11px;color:gray'>{ref}</span></em></p>"
-        )
-        resp = await client.post(
-            f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={
-                "body": {"contentType": "html", "content": content},
-                "attachments": [{
-                    "id": item_id,
-                    "contentType": "reference",
-                    "contentUrl": share_url,
-                    "name": f"Áudio WhatsApp.{ext}",
-                }],
-            },
-        )
-        if not resp.is_success:
-            raise Exception(f"audio message post {resp.status_code}: {resp.text[:300]}")
+    # 3. Posta mensagem no chat com o arquivo como anexo referenciado
+    caption_html = f"<p>{_esc(caption)}</p>" if caption else ""
+    body = (
+        f"<p>🎵 Áudio WhatsApp</p>"
+        f"{caption_html}"
+        f'<attachment id="{item_id}"></attachment>'
+        f"{_wa_ref(wa_chat_id, wa_message_id, sender_name)}"
+    )
+    return await _post_with_quote(
+        chat_id,
+        _wa_header(sender_name, chat_name),
+        body,
+        quote=quote,
+        attachments=[{
+            "id": item_id,
+            "contentType": "reference",
+            "contentUrl": share_url,
+            "name": f"Áudio WhatsApp.{ext}",
+        }],
+        timeout=60,
+    )
 
 
 async def post_document_to_chat(
@@ -248,12 +342,11 @@ async def post_document_to_chat(
     wa_chat_id: str,
     wa_message_id: str,
     caption: str = "",
-) -> None:
+    quote: dict | None = None,
+) -> str:
     """Envia documento como arquivo anexo no Teams via OneDrive do usuário autenticado."""
     import re
     token = await _get_delegated_token()
-    safe_sender = sender_name.replace("|", "").replace("[", "").replace("]", "")
-    ref = f"[wa:{wa_chat_id}|{wa_message_id}|{safe_sender}]"
 
     safe_name = re.sub(r"[^\w\s\-\.]", "_", filename).strip() or "documento"
 
@@ -279,29 +372,26 @@ async def post_document_to_chat(
         if link_resp.is_success:
             share_url = link_resp.json().get("link", {}).get("webUrl", web_url)
 
-        caption_html = f"<p>{_esc(caption)}</p>" if caption else ""
-        content = (
-            f"<p>📱 <strong>{_esc(sender_name)}</strong> &nbsp;·&nbsp; {_esc(chat_name)}</p>"
-            f"<p>📄 {_esc(filename)}</p>"
-            f"{caption_html}"
-            f'<attachment id="{item_id}"></attachment>'
-            f"<p><em><span style='font-size:11px;color:gray'>{ref}</span></em></p>"
-        )
-        resp = await client.post(
-            f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={
-                "body": {"contentType": "html", "content": content},
-                "attachments": [{
-                    "id": item_id,
-                    "contentType": "reference",
-                    "contentUrl": share_url,
-                    "name": filename,
-                }],
-            },
-        )
-        if not resp.is_success:
-            raise Exception(f"doc message post {resp.status_code}: {resp.text[:300]}")
+    caption_html = f"<p>{_esc(caption)}</p>" if caption else ""
+    body = (
+        f"<p>📄 {_esc(filename)}</p>"
+        f"{caption_html}"
+        f'<attachment id="{item_id}"></attachment>'
+        f"{_wa_ref(wa_chat_id, wa_message_id, sender_name)}"
+    )
+    return await _post_with_quote(
+        chat_id,
+        _wa_header(sender_name, chat_name),
+        body,
+        quote=quote,
+        attachments=[{
+            "id": item_id,
+            "contentType": "reference",
+            "contentUrl": share_url,
+            "name": filename,
+        }],
+        timeout=60,
+    )
 
 
 async def post_video_to_chat(
@@ -313,12 +403,11 @@ async def post_video_to_chat(
     wa_chat_id: str,
     wa_message_id: str,
     caption: str = "",
-) -> None:
+    quote: dict | None = None,
+) -> str:
     """Envia vídeo como arquivo anexo no Teams via OneDrive do usuário autenticado."""
     import re
     token = await _get_delegated_token()
-    safe_sender = sender_name.replace("|", "").replace("[", "").replace("]", "")
-    ref = f"[wa:{wa_chat_id}|{wa_message_id}|{safe_sender}]"
 
     ext_map = {
         "video/mp4": "mp4", "video/quicktime": "mov", "video/3gpp": "3gp",
@@ -351,29 +440,26 @@ async def post_video_to_chat(
         if link_resp.is_success:
             share_url = link_resp.json().get("link", {}).get("webUrl", web_url)
 
-        caption_html = f"<p>{_esc(caption)}</p>" if caption else ""
-        content = (
-            f"<p>📱 <strong>{_esc(sender_name)}</strong> &nbsp;·&nbsp; {_esc(chat_name)}</p>"
-            f"<p>🎥 Vídeo WhatsApp</p>"
-            f"{caption_html}"
-            f'<attachment id="{item_id}"></attachment>'
-            f"<p><em><span style='font-size:11px;color:gray'>{ref}</span></em></p>"
-        )
-        resp = await client.post(
-            f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={
-                "body": {"contentType": "html", "content": content},
-                "attachments": [{
-                    "id": item_id,
-                    "contentType": "reference",
-                    "contentUrl": share_url,
-                    "name": f"Vídeo WhatsApp.{ext}",
-                }],
-            },
-        )
-        if not resp.is_success:
-            raise Exception(f"video message post {resp.status_code}: {resp.text[:300]}")
+    caption_html = f"<p>{_esc(caption)}</p>" if caption else ""
+    body = (
+        f"<p>🎥 Vídeo WhatsApp</p>"
+        f"{caption_html}"
+        f'<attachment id="{item_id}"></attachment>'
+        f"{_wa_ref(wa_chat_id, wa_message_id, sender_name)}"
+    )
+    return await _post_with_quote(
+        chat_id,
+        _wa_header(sender_name, chat_name),
+        body,
+        quote=quote,
+        attachments=[{
+            "id": item_id,
+            "contentType": "reference",
+            "contentUrl": share_url,
+            "name": f"Vídeo WhatsApp.{ext}",
+        }],
+        timeout=60,
+    )
 
 
 async def post_to_chat(
@@ -383,23 +469,16 @@ async def post_to_chat(
     text: str,
     wa_chat_id: str,
     wa_message_id: str,
-) -> None:
-    token = await _get_delegated_token()
-    safe_sender = sender_name.replace("|", "").replace("[", "").replace("]", "")
-    ref = f"[wa:{wa_chat_id}|{wa_message_id}|{safe_sender}]"
-    content = (
-        f"<p>📱 <strong>{_esc(sender_name)}</strong> &nbsp;·&nbsp; {_esc(chat_name)}</p>"
-        f"<p>{_esc(text)}</p>"
-        f"<p><em><span style='font-size:11px;color:gray'>{ref}</span></em></p>"
+    quote: dict | None = None,
+) -> str:
+    body = f"<p>{_esc(text)}</p>{_wa_ref(wa_chat_id, wa_message_id, sender_name)}"
+    return await _post_with_quote(
+        chat_id,
+        _wa_header(sender_name, chat_name),
+        body,
+        quote=quote,
+        timeout=20,
     )
-    async with httpx.AsyncClient(timeout=20) as client:
-        resp = await client.post(
-            f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={"body": {"contentType": "html", "content": content}},
-        )
-        if not resp.is_success:
-            raise Exception(f"Chat post {resp.status_code}: {resp.text}")
 
 
 async def post_reply_to_chat(

@@ -76,7 +76,7 @@ class Settings(BaseSettings):
             pair = pair.strip()
             if "=" in pair:
                 chat_id, name = pair.split("=", 1)
-                result[chat_id.strip()] = name.strip()
+                result[_normalize_chat_id(chat_id)] = name.strip()
         return result
 
     @property
@@ -92,8 +92,15 @@ class Settings(BaseSettings):
             pair = pair.strip()
             if "=" in pair:
                 chat_id, jid = pair.split("=", 1)
-                result[chat_id.strip()] = jid.strip()
+                result[_normalize_chat_id(chat_id)] = jid.strip()
         return result
+
+
+def _normalize_chat_id(chat_id: str) -> str:
+    """Aceita o ID do chat do Teams copiado de uma URL ("19%3A...%40thread.v2") e o converte para
+    o formato que o Teams usa nas notificações ("19:...@thread.v2")."""
+    from urllib.parse import unquote
+    return unquote(chat_id.strip())
 
 
 settings = Settings()

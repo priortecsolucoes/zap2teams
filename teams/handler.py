@@ -37,11 +37,29 @@ def _get_chat_id_from_resource(resource: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _match_mapped_chat(chat_id: str | None) -> str | None:
+    """Retorna o ID do chat como está escrito em TEAMS_CHAT_MAPPINGS. O Teams pode informar o
+    ID com outra caixa (maiúsculas/minúsculas) do que foi configurado na variável."""
+    if not chat_id:
+        return None
+    if chat_id in settings.chat_mappings:
+        return chat_id
+    lowered = chat_id.lower()
+    for mapped in settings.chat_mappings:
+        if mapped.lower() == lowered:
+            return mapped
+    return None
+
+
 async def _process_one(notification: dict) -> None:
     resource: str = notification.get("resource", "")
 
-    teams_chat_id = _get_chat_id_from_resource(resource)
-    if not teams_chat_id or teams_chat_id not in settings.chat_mappings:
+    resource_chat_id = _get_chat_id_from_resource(resource)
+    teams_chat_id = _match_mapped_chat(resource_chat_id)
+    if not teams_chat_id:
+        # Chats 1:1 (@unq.gbl.spaces) são muitos e esperados; só registra chats de grupo.
+        if resource_chat_id and resource_chat_id.endswith("@thread.v2"):
+            print(f"[Teams→WA] Chat {resource_chat_id} não está em TEAMS_CHAT_MAPPINGS, ignorado")
         return
 
     reply_match = re.search(r"messages\('([^']+)'\)/replies\('([^']+)'\)$", resource)

@@ -82,6 +82,18 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_message_map_wa_message_id ON message_map (wa_message_id)"
         )
+        # IDs de chat do Teams que foram gravados codificados como URL (ex: "19%3A...%40thread.v2")
+        # passam para o formato normal ("19:...@thread.v2"), igual ao que o Teams informa.
+        from urllib.parse import unquote
+        for table in ("chat_threads", "message_map"):
+            rows = conn.execute(
+                f"SELECT DISTINCT teams_chat_id FROM {table} WHERE teams_chat_id LIKE '%\\%%' ESCAPE '\\'"
+            ).fetchall()
+            for (encoded,) in rows:
+                conn.execute(
+                    f"UPDATE {table} SET teams_chat_id = ? WHERE teams_chat_id = ?",
+                    (unquote(encoded), encoded),
+                )
 
 
 # ─────────────────────────────────────────────

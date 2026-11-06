@@ -51,12 +51,15 @@ async def _process_one(notification: dict) -> None:
         parent_id, reply_id = reply_match.group(1), reply_match.group(2)
         message = await teams_api.get_chat_reply(teams_chat_id, parent_id, reply_id)
         parent_message_id = parent_id
+        _log_message(message)
     elif top_match:
         message_id = top_match.group(1)
         message = await teams_api.get_chat_message(teams_chat_id, message_id)
         content_peek = (message.get("body") or {}).get("content", "")
+        _log_message(message)
         if not message.get("replyToId"):
             if "📱" in content_peek:
+                print(f"[Teams→WA] Msg {message_id} é eco da ponte (📱), ignorada")
                 _maybe_save_thread(message_id, message, teams_chat_id)
             else:
                 await _route_direct_message(message, teams_chat_id)
@@ -67,15 +70,18 @@ async def _process_one(notification: dict) -> None:
 
     # Resposta em thread: responde no WA citando a mensagem-pai (que veio do WhatsApp).
     if message.get("messageType") != "message":
+        print(f"[Teams→WA] Tipo '{message.get('messageType')}' ignorado")
         return
 
     content: str = (message.get("body") or {}).get("content", "")
     if "📱" in content:
+        print("[Teams→WA] Resposta em thread é eco da ponte (📱), ignorada")
         return
 
     reply_text = _strip_html(content).strip()
     images = await _extract_images(message, teams_chat_id)
     if not reply_text and not images:
+        print("[Teams→WA] Resposta em thread sem texto nem imagem, ignorada")
         return
 
     # Descobre o grupo e a mensagem do WA da mensagem-pai: primeiro pelo banco, depois pelo
@@ -111,6 +117,7 @@ async def _route_direct_message(message: dict, teams_chat_id: str) -> None:
     """Mensagem solta no chat do Teams (fora de thread). Se o atendente usou "Responder"
     citando uma mensagem, a resposta sai no WhatsApp com citação nativa."""
     if message.get("messageType") != "message":
+        print(f"[Teams→WA] Tipo '{message.get('messageType')}' ignorado")
         return
 
     content: str = (message.get("body") or {}).get("content", "")
@@ -118,6 +125,7 @@ async def _route_direct_message(message: dict, teams_chat_id: str) -> None:
     images = await _extract_images(message, teams_chat_id)
 
     if not reply_text and not images:
+        print("[Teams→WA] Mensagem sem texto nem imagem, ignorada")
         return
 
     wa_jid = db.find_wa_jid_by_teams_chat(teams_chat_id)
@@ -183,6 +191,16 @@ async def _relay_to_wa(
     db.update_thread_timestamp(wa_jid)
     await ai_watcher.on_our_response(wa_jid)
     print(f"[Teams→WA] ✓ Enviado para {wa_jid[:30]}")
+
+
+def _log_message(message: dict) -> None:
+    """Diagnóstico: resumo da mensagem lida no Graph, antes de decidir se vai para o WhatsApp."""
+    sender = ((message.get("from") or {}).get("user") or {}).get("displayName") or "?"
+    content = (message.get("body") or {}).get("content", "")
+    print(
+        f"[Teams→WA] Msg {message.get('id')} | tipo={message.get('messageType')} "
+        f"| replyToId={message.get('replyToId')} | de={sender} | body={content[:150]!r}"
+    )
 
 
 def _find_message_reference(message: dict) -> str | None:

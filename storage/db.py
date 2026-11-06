@@ -113,12 +113,16 @@ def save_message_map(entry: dict) -> None:
         )
 
 
-def find_by_teams_message_id(teams_message_id: str) -> dict | None:
+def find_by_teams_message_id(teams_message_id: str, teams_chat_id: str = "") -> dict | None:
+    """Busca pelo ID da mensagem no Teams. IDs do Teams são timestamps e podem coincidir entre
+    chats, então, quando o chat é informado, só aceita linhas desse chat."""
+    query = "SELECT * FROM message_map WHERE teams_message_id = ?"
+    params: tuple = (teams_message_id,)
+    if teams_chat_id:
+        query += " AND teams_chat_id = ?"
+        params += (teams_chat_id,)
     with _conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM message_map WHERE teams_message_id = ?",
-            (teams_message_id,),
-        ).fetchone()
+        row = conn.execute(query + " ORDER BY id DESC LIMIT 1", params).fetchone()
         return dict(row) if row else None
 
 

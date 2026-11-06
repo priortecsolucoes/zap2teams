@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     teams_chat_mappings: str = ""
     # Formato: "19:chatid1@thread.v2=120363@g.us;19:chatid2@thread.v2=120364@g.us"
     teams_wa_jids: str = ""
+    # Exibe o rodapé técnico [wa:grupo|mensagem|remetente] nas mensagens postadas no Teams.
+    # Desligado: o vínculo WA↔Teams fica só no banco (message_map/chat_threads).
+    teams_show_wa_ref: bool = False
     teams_incoming_webhook_url: str = ""
     teams_reply_webhook_url: str = ""
 

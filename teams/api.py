@@ -208,6 +208,10 @@ def _wa_header(sender_name: str, chat_name: str) -> str:
 
 
 def _wa_ref(wa_chat_id: str, wa_message_id: str, sender_name: str) -> str:
+    """Rodapé técnico com a origem no WhatsApp. Só aparece com TEAMS_SHOW_WA_REF=true: o Teams
+    copia o texto da mensagem para o cartão de citação, então o rodapé poluiria as citações."""
+    if not settings.teams_show_wa_ref:
+        return ""
     safe_sender = sender_name.replace("|", "").replace("[", "").replace("]", "")
     ref = f"[wa:{wa_chat_id}|{wa_message_id}|{safe_sender}]"
     return f"<p><em><span style='font-size:11px;color:gray'>{ref}</span></em></p>"

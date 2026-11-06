@@ -586,3 +586,11 @@ async def handle_incoming(payload: dict) -> None:
             })
         except Exception as e:
             print(f"[WA→Teams] Falha ao gravar mapa da mensagem: {e}")
+
+    # Registra qual grupo do WA corresponde a este chat do Teams (usado para enviar mensagens
+    # diretas Teams→WA). Antes isso era descoberto lendo o rodapé [wa:] no eco da mensagem.
+    if teams_msg_ids:
+        try:
+            db.save_thread(chat_id, teams_msg_ids[0], teams_chat_id)
+        except Exception as e:
+            print(f"[WA→Teams] Falha ao gravar vínculo do grupo: {e}")

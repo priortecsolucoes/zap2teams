@@ -7,7 +7,8 @@ import teams.api as teams_api
 from config import settings
 from storage import db
 
-# Referência oculta que toda mensagem vinda do WhatsApp carrega no Teams: [wa:chatId|msgId|remetente]
+# Rodapé com a origem no WhatsApp: [wa:chatId|msgId|remetente]. Só existe em mensagens antigas
+# ou com TEAMS_SHOW_WA_REF=true; o vínculo principal fica no banco (message_map).
 _WA_REF_RE = re.compile(r'\[wa:([^|\]]+)\|([^|\]]+)\|([^\]]+)\]')
 
 
@@ -77,15 +78,29 @@ async def _process_one(notification: dict) -> None:
     if not reply_text and not images:
         return
 
-    parent_message = await teams_api.get_chat_message(teams_chat_id, parent_message_id)
-    parent_content: str = (parent_message.get("body") or {}).get("content", "")
-    wa_match = _WA_REF_RE.search(parent_content)
-    if not wa_match:
-        print(f"[Teams→WA] Ref WA não encontrada na msg pai {parent_message_id}")
-        return
+    # Descobre o grupo e a mensagem do WA da mensagem-pai: primeiro pelo banco, depois pelo
+    # rodapé [wa:] (mensagens antigas ou com TEAMS_SHOW_WA_REF=true).
+    wa_chat_id, parent_wa_message_id = None, None
+    row = db.find_by_teams_message_id(parent_message_id, teams_chat_id)
+    if row and row.get("wa_group_id"):
+        wa_chat_id, parent_wa_message_id = row["wa_group_id"], row["wa_message_id"]
+    else:
+        try:
+            parent_message = await teams_api.get_chat_message(teams_chat_id, parent_message_id)
+            wa_match = _WA_REF_RE.search((parent_message.get("body") or {}).get("content", ""))
+            if wa_match:
+                wa_chat_id = wa_match.group(1).strip()
+                parent_wa_message_id = wa_match.group(2).strip()
+        except Exception as e:
+            print(f"[Teams→WA] Não foi possível ler a msg pai {parent_message_id}: {e}")
 
-    wa_chat_id = wa_match.group(1).strip()
-    parent_wa_message_id = wa_match.group(2).strip()
+    if not wa_chat_id:
+        # Sem vínculo conhecido: envia sem citar para o grupo mapeado a este chat.
+        wa_chat_id = db.find_wa_jid_by_teams_chat(teams_chat_id)
+        if not wa_chat_id:
+            print(f"[Teams→WA] Grupo WA não encontrado para a msg pai {parent_message_id}")
+            return
+        print(f"[Teams→WA] Msg pai {parent_message_id} sem origem conhecida, enviando sem citar")
 
     # Uma citação explícita dentro da thread tem prioridade sobre a mensagem-pai.
     quoted_wa_id = await _resolve_quoted_wa_id(message, teams_chat_id) or parent_wa_message_id
@@ -193,7 +208,7 @@ async def _resolve_quoted_wa_id(message: dict, teams_chat_id: str) -> str | None
     if not quoted_teams_id:
         return None
 
-    row = db.find_by_teams_message_id(quoted_teams_id)
+    row = db.find_by_teams_message_id(quoted_teams_id, teams_chat_id)
     if row:
         return row["wa_message_id"]
 

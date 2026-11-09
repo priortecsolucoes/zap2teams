@@ -25,6 +25,9 @@ async def process_notifications(body: dict) -> None:
             print("[Teams→WA] clientState inválido, ignorado")
             continue
         if notification.get("lifecycleEvent"):
+            # Avisos da Microsoft sobre a assinatura (ex: "missed" = notificações perdidas,
+            # "reauthorizationRequired"). Não são mensagens; ficam no log para diagnóstico.
+            print(f"[Teams→WA] Aviso de ciclo de vida da assinatura: {notification.get('lifecycleEvent')}")
             continue
         try:
             await _process_one(notification)
@@ -238,13 +241,30 @@ async def _relay_to_wa(
 
 
 def _log_message(message: dict) -> None:
-    """Diagnóstico: resumo da mensagem lida no Graph, antes de decidir se vai para o WhatsApp."""
+    """Diagnóstico: resumo da mensagem lida no Graph, antes de decidir se vai para o WhatsApp.
+    Inclui o atraso entre o envio no Teams e a chegada da notificação da Microsoft aqui."""
     sender = ((message.get("from") or {}).get("user") or {}).get("displayName") or "?"
     content = (message.get("body") or {}).get("content", "")
     print(
         f"[Teams→WA] Msg {message.get('id')} | tipo={message.get('messageType')} "
-        f"| replyToId={message.get('replyToId')} | de={sender} | body={content[:150]!r}"
+        f"| replyToId={message.get('replyToId')} | de={sender} "
+        f"| atraso={_format_delay(message.get('createdDateTime'))} | body={content[:150]!r}"
     )
+
+
+def _format_delay(created_iso: str | None) -> str:
+    """Tempo desde a criação da mensagem no Teams até agora, ex: "3s" ou "13min00s (LENTO)"."""
+    from datetime import datetime, timezone
+    if not created_iso:
+        return "?"
+    try:
+        created = datetime.strptime(created_iso[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return "?"
+    seconds = int((datetime.now(timezone.utc) - created).total_seconds())
+    if seconds < 60:
+        return f"{seconds}s"
+    return f"{seconds // 60}min{seconds % 60:02d}s (LENTO)"
 
 
 def _find_message_reference(message: dict) -> str | None:

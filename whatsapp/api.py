@@ -18,30 +18,45 @@ async def send_text(chat_id: str, text: str) -> dict:
         return resp.json()
 
 
-async def send_image(
-    chat_id: str, image_bytes: bytes, mimetype: str, caption: str = "", reply_id: str = ""
+async def send_media(
+    chat_id: str,
+    media_type: str,
+    file: str,
+    mimetype: str = "",
+    caption: str = "",
+    doc_name: str = "",
+    reply_id: str = "",
 ) -> dict:
-    """Envia imagem via Uazapi /send/media com type=image e arquivo em base64.
-    Com reply_id, a imagem sai citando essa mensagem (se a uazapi recusar, envia sem citar)."""
-    import base64 as _b64
-    payload = {
-        "number": chat_id,
-        "type": "image",
-        "file": _b64.b64encode(image_bytes).decode(),
-        "text": caption or "",
-    }
+    """Envia mídia via Uazapi /send/media. media_type: image, video, document, audio...
+    file pode ser base64 ou uma URL (a uazapi baixa o arquivo). doc_name só vale para document.
+    Com reply_id, a mídia sai citando essa mensagem (se a uazapi recusar, envia sem citar)."""
+    payload = {"number": chat_id, "type": media_type, "file": file, "text": caption or ""}
+    if mimetype:
+        payload["mimetype"] = mimetype
+    if doc_name and media_type == "document":
+        payload["docName"] = doc_name
     if reply_id:
         payload["replyid"] = reply_id
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(f"{settings.uazapi_base}/send/media", headers=_headers(), json=payload)
         if not resp.is_success and reply_id:
-            print(f"[WA API] Citação na imagem recusada ({resp.status_code}), enviando sem citar")
+            print(f"[WA API] Citação na mídia recusada ({resp.status_code}), enviando sem citar")
             payload.pop("replyid")
             resp = await client.post(f"{settings.uazapi_base}/send/media", headers=_headers(), json=payload)
         if not resp.is_success:
             raise Exception(f"send/media {resp.status_code}: {resp.text[:200]}")
-        print("[WA API] send_image OK")
+        print(f"[WA API] send_media ({media_type}) OK")
         return resp.json() if resp.content else {}
+
+
+async def send_image(
+    chat_id: str, image_bytes: bytes, mimetype: str, caption: str = "", reply_id: str = ""
+) -> dict:
+    """Envia imagem em base64. Com reply_id, a imagem sai citando essa mensagem."""
+    import base64 as _b64
+    return await send_media(
+        chat_id, "image", _b64.b64encode(image_bytes).decode(), caption=caption, reply_id=reply_id
+    )
 
 
 async def send_reply(chat_id: str, quoted_msg_id: str, text: str) -> dict:

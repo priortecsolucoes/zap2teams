@@ -98,8 +98,9 @@ async def _process_one(notification: dict) -> None:
 
     reply_text = _strip_html(content).strip()
     images = await _extract_images(message, teams_chat_id)
-    if not reply_text and not images:
-        print("[Teams→WA] Resposta em thread sem texto nem imagem, ignorada")
+    files = await _extract_files(message)
+    if not reply_text and not images and not files:
+        print("[Teams→WA] Resposta em thread sem texto, imagem ou arquivo, ignorada")
         return
 
     # Descobre o grupo e a mensagem do WA da mensagem-pai: primeiro pelo banco, depois pelo
@@ -128,7 +129,7 @@ async def _process_one(notification: dict) -> None:
 
     # Uma citação explícita dentro da thread tem prioridade sobre a mensagem-pai.
     quoted_wa_id = await _resolve_quoted_wa_id(message, teams_chat_id) or parent_wa_message_id
-    await _relay_to_wa(message, teams_chat_id, wa_chat_id, reply_text, images, quoted_wa_id)
+    await _relay_to_wa(message, teams_chat_id, wa_chat_id, reply_text, images, files, quoted_wa_id)
 
 
 async def _route_direct_message(message: dict, teams_chat_id: str) -> None:
@@ -141,9 +142,10 @@ async def _route_direct_message(message: dict, teams_chat_id: str) -> None:
     content: str = (message.get("body") or {}).get("content", "")
     reply_text = _strip_html(content).strip()
     images = await _extract_images(message, teams_chat_id)
+    files = await _extract_files(message)
 
-    if not reply_text and not images:
-        print("[Teams→WA] Mensagem sem texto nem imagem, ignorada")
+    if not reply_text and not images and not files:
+        print("[Teams→WA] Mensagem sem texto, imagem ou arquivo, ignorada")
         return
 
     wa_jid = db.find_wa_jid_by_teams_chat(teams_chat_id)
@@ -153,7 +155,7 @@ async def _route_direct_message(message: dict, teams_chat_id: str) -> None:
         return
 
     quoted_wa_id = await _resolve_quoted_wa_id(message, teams_chat_id)
-    await _relay_to_wa(message, teams_chat_id, wa_jid, reply_text, images, quoted_wa_id)
+    await _relay_to_wa(message, teams_chat_id, wa_jid, reply_text, images, files, quoted_wa_id)
 
 
 async def _relay_to_wa(
@@ -162,9 +164,11 @@ async def _relay_to_wa(
     wa_jid: str,
     reply_text: str,
     images: list[tuple[bytes, str]],
+    files: list[dict],
     quoted_wa_id: str | None,
 ) -> None:
-    """Envia texto/imagens do Teams para o WhatsApp, citando quoted_wa_id quando houver."""
+    """Envia texto, imagens e arquivos do Teams para o WhatsApp. A citação (quoted_wa_id) vai
+    no texto ou, sem texto, no primeiro item enviado."""
     from_info = message.get("from") or {}
     sender_name: str = (from_info.get("user") or {}).get("displayName") or "Colaborador"
     quote_log = f" (citando {quoted_wa_id[:20]})" if quoted_wa_id else ""
@@ -188,6 +192,28 @@ async def _relay_to_wa(
         if first_response is None:
             first_response = resp
 
+    for f in files:
+        caption = f"*{sender_name}*" if not reply_text else ""
+        reply_id = quoted_wa_id if (quoted_wa_id and first_response is None) else ""
+        resp = None
+        if not f.get("error"):
+            media_type = "image" if f["is_image"] else "document"
+            print(f'[Teams→WA] "{sender_name}" → {media_type} "{f["name"]}" ({f["size"]} bytes) → {wa_jid[:30]}')
+            try:
+                resp = await wa_api.send_media(
+                    wa_jid, media_type, f["download_url"], mimetype=f["mimetype"],
+                    caption=caption, doc_name=f["name"], reply_id=reply_id,
+                )
+            except Exception as e:
+                print(f'[Teams→WA] Falha ao enviar "{f["name"]}" para o WhatsApp: {e}')
+        if resp is None:
+            # Não deixa o arquivo sumir em silêncio: avisa no grupo que houve um anexo.
+            resp = await wa_api.send_text(
+                wa_jid, f'*{sender_name}:*\n📎 {f["name"]} (não foi possível enviar o arquivo)'
+            )
+        if first_response is None:
+            first_response = resp
+
     # Guarda o vínculo para que, se o cliente citar esta resposta no WhatsApp, o Teams
     # consiga apontar para a mensagem original do atendente.
     wa_message_id = wa_api.get_message_id(first_response or {})
@@ -199,7 +225,7 @@ async def _relay_to_wa(
                 "wa_sender_name": sender_name,
                 "wa_sender_number": "",
                 "wa_message_id": wa_message_id,
-                "wa_message_text": reply_text or "📷 [Foto]",
+                "wa_message_text": reply_text or (f"📎 {files[0]['name']}" if files and not images else "📷 [Foto]"),
                 "teams_message_id": message["id"],
                 "teams_chat_id": teams_chat_id,
             })
@@ -278,24 +304,30 @@ async def _extract_images(message: dict, teams_chat_id: str) -> list[tuple[bytes
         except Exception as e:
             print(f"[Teams→WA] Hosted content {hc_id[:30]} falhou: {e}")
 
-    # Imagens enviadas como arquivo anexo
-    for att in message.get("attachments") or []:
-        if att.get("contentType") != "reference":
-            continue
-        name = att.get("name", "").lower()
-        if not any(name.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")):
-            continue
-        ct_url = att.get("contentUrl", "")
-        if not ct_url:
-            continue
-        try:
-            img_bytes = await wa_api.download_media(ct_url)
-            mime = "image/png" if name.endswith(".png") else "image/gif" if name.endswith(".gif") else "image/jpeg"
-            results.append((img_bytes, mime))
-            print(f"[Teams→WA] Anexo '{name}' baixado: {len(img_bytes)} bytes")
-        except Exception as e:
-            print(f"[Teams→WA] Anexo '{name}' falhou: {e}")
+    return results
 
+
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
+
+
+async def _extract_files(message: dict) -> list[dict]:
+    """Arquivos anexados no Teams (PDF, Excel, imagens enviadas como arquivo...). Eles chegam como
+    attachment "reference" apontando para o SharePoint/OneDrive de quem enviou, que exige login;
+    por isso o Graph fornece um link de download temporário que a uazapi consegue baixar.
+    Se não der para ler o arquivo, o item volta com "error" para gerar um aviso no WhatsApp."""
+    results = []
+    for att in message.get("attachments") or []:
+        if att.get("contentType") != "reference" or not att.get("contentUrl"):
+            continue
+        name = att.get("name") or "arquivo"
+        try:
+            info = await teams_api.get_shared_file(att["contentUrl"])
+            info["is_image"] = info["name"].lower().endswith(_IMAGE_EXTS)
+            print(f'[Teams→WA] Anexo "{info["name"]}" ({info["mimetype"] or "?"}, {info["size"]} bytes) pronto')
+            results.append(info)
+        except Exception as e:
+            print(f'[Teams→WA] Anexo "{name}" falhou: {e}')
+            results.append({"name": name, "error": str(e)})
     return results
 
 

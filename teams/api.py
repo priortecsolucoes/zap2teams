@@ -81,6 +81,46 @@ async def graph_request(method: str, path: str, body: dict | None = None) -> dic
         return resp.json() if resp.content else {}
 
 
+async def get_shared_file(content_url: str) -> dict:
+    """Lê os dados de um arquivo anexado no Teams (attachment "reference", que aponta para o
+    SharePoint/OneDrive de quem enviou). Retorna name, mimetype, size e download_url — um link
+    pré-autenticado, válido por cerca de 1 hora, que dispensa login para baixar.
+
+    Tenta com o token do app (exige Files.Read.All de aplicativo) e, se negado, com o token
+    delegado da conta-ponte, que é membro do chat e por isso tem acesso ao arquivo."""
+    import base64
+    share_id = "u!" + base64.urlsafe_b64encode(content_url.encode()).decode().rstrip("=")
+    url = f"https://graph.microsoft.com/v1.0/shares/{share_id}/driveItem"
+    errors: list[str] = []
+    statuses: list[int] = []
+    for label, get_token in (("app", _get_access_token), ("delegado", _get_delegated_token)):
+        try:
+            token = await get_token()
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+        except Exception as e:
+            errors.append(f"{label}: {e}")
+            continue
+        if resp.is_success:
+            item = resp.json()
+            download_url = item.get("@microsoft.graph.downloadUrl")
+            if not download_url:
+                errors.append(f"{label}: resposta sem link de download")
+                continue
+            return {
+                "name": item.get("name") or "arquivo",
+                "mimetype": (item.get("file") or {}).get("mimeType") or "",
+                "size": item.get("size") or 0,
+                "download_url": download_url,
+            }
+        errors.append(f"{label}: {resp.status_code} {resp.text[:200]}")
+        statuses.append(resp.status_code)
+        if resp.status_code not in (401, 403):
+            break
+    hint = " (conceda Files.Read.All de aplicativo ao app no Azure AD)" if 403 in statuses else ""
+    raise Exception(f"Não foi possível ler o arquivo{hint}: {' | '.join(errors)}")
+
+
 async def download_graph_binary(path: str) -> tuple[bytes, str]:
     """Baixa conteúdo binário da Graph API (ex: hostedContents de imagens)."""
     token = await _get_access_token()

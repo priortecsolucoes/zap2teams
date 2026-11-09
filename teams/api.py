@@ -388,15 +388,23 @@ async def post_document_to_chat(
     caption: str = "",
     quote: dict | None = None,
 ) -> str:
-    """Envia documento como arquivo anexo no Teams via OneDrive do usuário autenticado."""
+    """Envia documento como arquivo anexo no Teams via OneDrive do usuário autenticado.
+
+    O Teams só mostra o cartão com pré-visualização quando o nome do anexo é igual ao nome do
+    arquivo no OneDrive; por isso o nome original é preservado (só saem os caracteres que o
+    OneDrive não aceita) e o anexo usa o nome que o OneDrive efetivamente gravou."""
     import re
+    from urllib.parse import quote as _quote
     token = await _get_delegated_token()
 
-    safe_name = re.sub(r"[^\w\s\-\.]", "_", filename).strip() or "documento"
+    safe_name = re.sub(r'["*:<>?/\\|#%\x00-\x1f]', "_", filename).strip().strip(".") or "documento"
 
     async with httpx.AsyncClient(timeout=60) as client:
+        # conflictBehavior=rename: arquivos com o mesmo nome viram "nome 1.pdf" em vez de
+        # sobrescrever o anterior (o que trocaria o conteúdo de links já enviados).
         resp = await client.put(
-            f"https://graph.microsoft.com/v1.0/me/drive/root:/WhatsApp-Docs/{safe_name}:/content",
+            f"https://graph.microsoft.com/v1.0/me/drive/root:/WhatsApp-Docs/{_quote(safe_name)}:/content"
+            "?@microsoft.graph.conflictBehavior=rename",
             headers={"Authorization": f"Bearer {token}", "Content-Type": mimetype or "application/octet-stream"},
             content=doc_bytes,
         )
@@ -406,6 +414,7 @@ async def post_document_to_chat(
         drive_id = item["parentReference"]["driveId"]
         item_id = item["id"]
         web_url = item.get("webUrl", "")
+        stored_name = item.get("name") or safe_name
 
         link_resp = await client.post(
             f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/createLink",
@@ -432,7 +441,7 @@ async def post_document_to_chat(
             "id": item_id,
             "contentType": "reference",
             "contentUrl": share_url,
-            "name": filename,
+            "name": stored_name,
         }],
         timeout=60,
     )
